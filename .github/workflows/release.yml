@@ -1,15 +1,18 @@
 name: Release
 
+# The version lives in Cargo.toml. Bump it through a normal PR; once it lands
+# on main this workflow reads the version, and if the matching tag does not
+# exist yet it tags, publishes to crates.io, and cuts the GitHub Release, all
+# by itself. Nothing is released while the version is unchanged.
 on:
   push:
-    tags:
-      - "v*.*.*"
+    branches: [main]
 
 permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release
   cancel-in-progress: false
 
 env:
@@ -17,66 +20,80 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
-  verify:
-    name: Verify
+  # Read the version from Cargo.toml and decide whether it needs releasing
+  # (i.e. no tag exists for it yet).
+  check:
+    name: Check version
     runs-on: ubuntu-latest
+    outputs:
+      release: ${{ steps.decide.outputs.release }}
+      tag: ${{ steps.decide.outputs.tag }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+      - name: Decide whether to release
+        id: decide
+        run: |
+          version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')"
+          tag="v${version}"
+          echo "Cargo.toml version: ${version} (tag ${tag})"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          if git ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null 2>&1; then
+            echo "Tag ${tag} already exists; nothing to release."
+            echo "release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Tag ${tag} does not exist; will release."
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  release:
+    name: Release
+    needs: check
+    if: ${{ needs.check.outputs.release == 'true' }}
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ needs.check.outputs.tag }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
         with:
           toolchain: stable
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
-      - name: Check that tag matches Cargo.toml version
-        run: |
-          tag_version="${GITHUB_REF_NAME#v}"
-          crate_version="$(cargo metadata --no-deps --format-version 1 \
-            | grep -o '"version":"[^"]*"' | head -n1 | cut -d'"' -f4)"
-          echo "tag=${tag_version} crate=${crate_version}"
-          if [ "${tag_version}" != "${crate_version}" ]; then
-            echo "::error::Tag version (${tag_version}) does not match Cargo.toml version (${crate_version})"
-            exit 1
-          fi
-      - name: Format
-        run: cargo fmt --all -- --check
-      - name: Clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
-      - name: Test
-        run: cargo test --all-features --verbose -- --include-ignored
-      - name: Package (dry run)
-        run: cargo publish --dry-run
 
-  publish:
-    name: Publish to crates.io
-    needs: verify
-    runs-on: ubuntu-latest
-    environment: release
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
-        with:
-          toolchain: stable
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
-      - name: Publish
+
+      - name: Run checks
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --all-targets --all-features -- -D warnings
+          cargo test --all-features --verbose -- --include-ignored
+          cargo publish --dry-run
+
+      - name: Create and push tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "${TAG}" -m "Release ${TAG}"
+          git push origin "${TAG}"
+
+      - name: Publish to crates.io
         run: cargo publish --token "${CARGO_REGISTRY_TOKEN}"
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
-  github-release:
-    name: GitHub Release
-    needs: publish
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${GITHUB_REF_NAME}" \
+          gh release create "${TAG}" \
             --repo "${GITHUB_REPOSITORY}" \
-            --title "${GITHUB_REF_NAME}" \
+            --title "${TAG}" \
             --generate-notes
