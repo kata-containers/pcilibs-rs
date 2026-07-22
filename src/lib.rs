@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 
+mod iommufd;
 mod pci_manager;
 
 use std::fs;
@@ -11,6 +12,9 @@ use std::os::unix::prelude::FileTypeExt;
 
 use nix::sys::stat;
 
+#[cfg(feature = "testfs")]
+pub use iommufd::testfs;
+pub use iommufd::{enumerate_iommufd, IommufdDev, IOMMUFD_SYSFS_CLASS, IOMMUFD_VFIO_DIR};
 pub use pci_manager::{is_pcie_device, PCIDevice, PCIDeviceManager};
 
 /// Device driver for vfio-pci guest kernel driver.
