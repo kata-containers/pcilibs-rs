@@ -10,6 +10,11 @@ readme = "README.md"
 license = "Apache-2.0"
 edition = "2018"
 
+[features]
+# Test fixtures: fake /dev/vfio + sysfs layouts for enumerate_iommufd.
+# For dev-dependencies only.
+testfs = []
+
 [dependencies]
 nix = { version = "0.31.3", default-features = false, features = ["fs"] }
 pci-ids = "0.2.6"
