@@ -12,6 +12,8 @@ snapshots.
 - PCIe detection from config space size
 - VFIO driver type matching
 - InfiniBand / uverbs diagnostic snapshots
+- Live register access to a device: BAR0 mapping, function-level reset, and
+  forcing a runtime-suspended device out of D3 (`PciDev`)
 
 ## Testing
 

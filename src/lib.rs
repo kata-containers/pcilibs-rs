@@ -4,6 +4,7 @@
 //
 
 mod iommufd;
+mod pci_dev;
 mod pci_ids;
 mod pci_manager;
 mod sysfs;
@@ -21,6 +22,7 @@ pub use iommufd::{
     enumerate_iommufd, is_passthrough_capable_class, lookup_iommufd_dev, IommufdDev,
     IOMMUFD_VFIO_DIR,
 };
+pub use pci_dev::{attr_hex, poll, PciDev};
 pub use pci_manager::{is_pcie_device, PCIDevice, PCIDeviceManager};
 pub use sysfs::{Sysfs, SYSFS};
 

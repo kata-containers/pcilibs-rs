@@ -11,7 +11,7 @@ use std::path::PathBuf;
 
 use crate::pci_ids::{Class, Device, FromId};
 
-use crate::{normalize_bdf, Sysfs};
+use crate::{normalize_bdf, PciDev, Sysfs};
 
 const PCI_CONFIG_SPACE_SZ: u64 = 256;
 
@@ -35,6 +35,17 @@ pub struct PCIDevice {
     pub driver: String,
     pub iommu_group: i64,
     pub numa_node: i64,
+    /// Kept so a device opens under the tree it was found in.
+    sysfs: Sysfs,
+}
+
+impl PCIDevice {
+    /// Map this device's BAR0 for register access. Enumeration reads
+    /// attributes and needs no privilege; this needs root and wakes the
+    /// device if it is suspended.
+    pub fn open(&self) -> io::Result<PciDev> {
+        PciDev::open_in(&self.sysfs, &self.address)
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -145,6 +156,7 @@ impl PCIDeviceManager {
             numa_node,
             device_name,
             class_name,
+            sysfs: self.sysfs.clone(),
         };
 
         cache.insert(address, pci_device.clone());
@@ -330,6 +342,22 @@ mod tests {
             .expect("the device should be found");
 
         assert_eq!(found.address, "0000:ff:1f.0");
+    }
+
+    /// The handle has to be opened under the root the device was enumerated
+    /// from, or a caller pointed at a test tree would silently read /sys.
+    #[rstest]
+    fn open_looks_under_the_root_the_device_came_from(fake: Fake) {
+        let (vendor, device, class) = E1000;
+        fake.add_pci_device("0000:03:00.0", vendor, device, class, None);
+        let manager = manager(&fake);
+        let device = &manager.get_all_devices(None).unwrap()[0];
+
+        // No resource0 in the fake tree, so this cannot succeed — but the
+        // error must name the fake root, not /sys/bus/pci/devices.
+        let err = device.open().unwrap_err().to_string();
+
+        assert!(err.contains(&*fake.root().to_string_lossy()), "{err}");
     }
 
     /// A lookup joins its argument onto the sysfs root, so anything that is
