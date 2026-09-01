@@ -112,7 +112,7 @@ impl PciDev {
         // and the two switches it leaves set come last.
         let vendor = attr_hex(&path, "vendor")? as u16;
         let device = attr_hex(&path, "device")? as u16;
-        let bar0 = Bar0::map(&path.join("resource0"))?;
+        let bar0 = Bar0::Mapped(Mapping::map(&path.join("resource0"))?);
 
         let power_control = wake(&path)?;
         let decoding_enabled = enable_memory_decoding(&path)
@@ -143,6 +143,37 @@ impl PciDev {
         std::fs::write(self.path.join("reset"), "1")
             .map_err(|err| context(err, format!("{}: reset via sysfs", self.bdf)))
     }
+}
+
+/// A device whose registers are modelled rather than mapped: the FSP
+/// mailboxes in [`crate::cc`] are a protocol, not a memory, so a `resource0`
+/// file can hold register values but cannot answer an RPC.
+#[cfg(test)]
+impl PciDev {
+    pub(crate) fn modelled(
+        path: PathBuf,
+        bdf: &str,
+        vendor: u16,
+        device: u16,
+        registers: Box<dyn Registers>,
+    ) -> Self {
+        Self {
+            bdf: bdf.to_string(),
+            vendor,
+            device,
+            path,
+            bar0: Bar0::Modelled(registers),
+            power_control: None,
+            decoding_enabled: false,
+        }
+    }
+}
+
+/// See [`PciDev::modelled`].
+#[cfg(test)]
+pub(crate) trait Registers: std::fmt::Debug + Send {
+    fn read32(&self, offset: u32) -> u32;
+    fn write32(&self, offset: u32, value: u32);
 }
 
 impl Drop for PciDev {
@@ -231,10 +262,36 @@ fn restore_power(path: &Path, previous: Option<&str>) {
     }
 }
 
+/// A device's BAR0: the mapping on real hardware, a model of one in tests.
+#[derive(Debug)]
+enum Bar0 {
+    Mapped(Mapping),
+    #[cfg(test)]
+    Modelled(Box<dyn Registers>),
+}
+
+impl Bar0 {
+    fn read32(&self, offset: u32) -> u32 {
+        match self {
+            Self::Mapped(mapping) => mapping.read32(offset),
+            #[cfg(test)]
+            Self::Modelled(registers) => registers.read32(offset),
+        }
+    }
+
+    fn write32(&self, offset: u32, value: u32) {
+        match self {
+            Self::Mapped(mapping) => mapping.write32(offset, value),
+            #[cfg(test)]
+            Self::Modelled(registers) => registers.write32(offset, value),
+        }
+    }
+}
+
 /// MMIO mapping of `resource0`.  Sysfs resource files reject read()/write();
 /// mmap is the only access path.
 #[derive(Debug)]
-struct Bar0 {
+struct Mapping {
     ptr: *mut u8,
     len: usize,
 }
@@ -242,9 +299,9 @@ struct Bar0 {
 // SAFETY: the pointer is a plain MMIO address; volatile accesses are not
 // tied to the owning thread.  Deliberately not Sync — the FSP RPC
 // sequences on top of this are not safe to interleave.
-unsafe impl Send for Bar0 {}
+unsafe impl Send for Mapping {}
 
-impl Bar0 {
+impl Mapping {
     fn map(resource0: &Path) -> io::Result<Self> {
         let file = OpenOptions::new()
             .read(true)
@@ -300,7 +357,7 @@ impl Bar0 {
     }
 }
 
-impl Drop for Bar0 {
+impl Drop for Mapping {
     fn drop(&mut self) {
         unsafe { libc::munmap(self.ptr as *mut libc::c_void, self.len) };
     }
