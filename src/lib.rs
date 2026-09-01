@@ -3,6 +3,8 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 
+#[cfg(feature = "cc")]
+pub mod cc;
 mod iommufd;
 mod pci_dev;
 mod pci_ids;

@@ -18,8 +18,13 @@ rust-version = "1.83"
 [features]
 # Fake sysfs and /dev/vfio trees. For dev-dependencies only.
 testfs = ["dep:tempfile"]
+# In-band NVIDIA confidential computing and Protected PCIe. Off by default:
+# a consumer that only enumerates devices should not pull anyhow, and should
+# not have to care that this exists.
+cc = ["dep:anyhow"]
 
 [dependencies]
+anyhow = { version = "1", optional = true }
 # Already in the tree via nix; used directly for the BAR0 mmap.
 libc = "0.2"
 nix = { version = "0.31.3", default-features = false, features = ["fs"] }

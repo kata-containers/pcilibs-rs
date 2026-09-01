@@ -9,6 +9,7 @@
 //! sysfs trees and belongs nowhere near production code.
 
 use std::fs;
+use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
 
 use tempfile::TempDir;
@@ -98,6 +99,14 @@ impl Fake {
         fs::create_dir(path.join("power")).unwrap();
         fs::write(path.join("power/control"), "auto\n").unwrap();
         fs::write(path.join("power/runtime_status"), "active\n").unwrap();
+    }
+
+    pub fn set_register(&self, address: &str, offset: u64, value: u32) {
+        fs::OpenOptions::new()
+            .write(true)
+            .open(self.device(address).join("resource0"))
+            .and_then(|bar0| bar0.write_all_at(&value.to_le_bytes(), offset))
+            .unwrap();
     }
 
     pub fn add_driver(&self, name: &str) -> PathBuf {
