@@ -15,6 +15,21 @@ snapshots.
 - Live register access to a device: BAR0 mapping, function-level reset, and
   forcing a runtime-suspended device out of D3 (`PciDev`)
 
+### `cc` — in-band NVIDIA confidential computing
+
+Off by default. Enables `pcilibs_rs::cc`: query and set a GPU's confidential
+computing mode, and Protected PCIe across an HGX baseboard including its
+NVSwitches.
+
+```toml
+pcilibs-rs = { git = "...", features = ["cc"] }
+```
+
+Everything goes through sysfs and a BAR0 mapping, so no NVIDIA kernel driver
+has to be present — which is what lets a mode be set on a GPU that is already
+bound to `vfio-pci`. Enabling the feature adds `anyhow`; a consumer that only
+enumerates devices pulls neither it nor this code.
+
 ## Testing
 
 The PCI ID database is a submodule, so `git submodule update --init` before
