@@ -30,4 +30,16 @@ cargo llvm-cov --all-features --workspace \
 
 ## License
 
-Apache-2.0
+Apache-2.0, except for the in-band confidential computing code, which is MIT
+under NVIDIA's copyright:
+
+| Path | License |
+| --- | --- |
+| `src/cc/` | MIT — a Rust port of the CC subset of NVIDIA's [`gpu-admin-tools`](https://github.com/NVIDIA/gpu-admin-tools) |
+| `src/pci_dev.rs` | MIT — the generic PCI register access the port needed, which this crate did not have |
+| everything else | Apache-2.0 |
+
+Per-file SPDX headers are authoritative; `LICENSE` and `LICENSE-MIT` hold the
+two texts. When adding a register, a PRC knob id or a chip to `src/cc/`, say in
+a comment which `gpu-admin-tools` file it came from, so the port stays checkable
+against its source.
