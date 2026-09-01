@@ -20,6 +20,8 @@ rust-version = "1.83"
 testfs = ["dep:tempfile"]
 
 [dependencies]
+# Already in the tree via nix; used directly for the BAR0 mmap.
+libc = "0.2"
 nix = { version = "0.31.3", default-features = false, features = ["fs"] }
 phf = { version = "0.11", default-features = false }
 tempfile = { version = "3.19.1", optional = true }

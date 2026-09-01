@@ -75,6 +75,31 @@ impl Fake {
         fs::write(path.join("numa_node"), "0\n").unwrap();
     }
 
+    /// Everything [`crate::PciDev`] reads to open a function: identity,
+    /// config space, a runtime-PM policy that needs no waking, `reset`, and
+    /// a `resource0`.  The BAR0 is sparse, the registers a caller reaches
+    /// for being megabytes apart.
+    pub fn add_mappable_device(
+        &self,
+        address: &str,
+        vendor: u16,
+        device: u16,
+        class: u32,
+        bar0_len: u64,
+    ) {
+        self.add_pci_device(address, vendor, device, class, None);
+
+        let path = self.device(address);
+        fs::File::create(path.join("resource0"))
+            .and_then(|bar0| bar0.set_len(bar0_len))
+            .unwrap();
+        fs::write(path.join("config"), [0u8; 64]).unwrap();
+        fs::write(path.join("reset"), "").unwrap();
+        fs::create_dir(path.join("power")).unwrap();
+        fs::write(path.join("power/control"), "auto\n").unwrap();
+        fs::write(path.join("power/runtime_status"), "active\n").unwrap();
+    }
+
     pub fn add_driver(&self, name: &str) -> PathBuf {
         let path = self.driver(name);
         fs::create_dir_all(&path).unwrap();
