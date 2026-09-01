@@ -19,7 +19,8 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-//! In-band per-GPU NVIDIA confidential computing control.
+//! In-band NVIDIA confidential computing control: per-GPU CC, and
+//! Protected PCIe across a whole HGX baseboard.
 //!
 //! Rust port of the CC subset of NVIDIA's gpu-admin-tools: query the
 //! current mode, set a new one through FSP PRC knobs, and reset the
@@ -89,6 +90,63 @@ impl std::fmt::Display for CcMode {
     }
 }
 
+/// Protected PCIe: one mode for a whole HGX baseboard, mutually exclusive
+/// with per-GPU CC.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PpcieMode {
+    Off,
+    On,
+}
+
+impl std::str::FromStr for PpcieMode {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self> {
+        match s {
+            "off" => Ok(Self::Off),
+            "on" => Ok(Self::On),
+            _ => bail!("invalid PPCIE mode {s:?} (expected off or on)"),
+        }
+    }
+}
+
+impl std::fmt::Display for PpcieMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Off => "off",
+            Self::On => "on",
+        })
+    }
+}
+
+/// Ordered knob writes for `mode` (gpu-admin-tools `set_ppcie_mode`).
+///
+/// Knob 34 is cleared unconditionally: upstream gates it on
+/// `is_nvswitch() or is_hopper`, and only those two reach here.
+/// Switches have no BAR0 decoupler, so theirs is only written back to 0.
+fn ppcie_knob_plan(mode: PpcieMode, bar0_decoupler: bool) -> Vec<(u32, u16)> {
+    let mut plan = Vec::new();
+    if mode == PpcieMode::On {
+        for knob in [
+            fsp::KNOB_2,
+            fsp::KNOB_4,
+            fsp::KNOB_CCD,
+            fsp::KNOB_CCM,
+            fsp::KNOB_34,
+        ] {
+            plan.push((knob, 0));
+        }
+    }
+    let decoupler = if mode == PpcieMode::On && bar0_decoupler {
+        2
+    } else {
+        0
+    };
+    plan.push((fsp::KNOB_BAR0_DECOUPLER, decoupler));
+    plan.push((fsp::KNOB_PPCIE, u16::from(mode == PpcieMode::On)));
+    plan
+}
+
 /// One CC-capable GPU generation: a PCI device-id range and the two
 /// per-generation register facts.  Supporting a new chip is one row.
 pub struct Chip {
@@ -148,6 +206,11 @@ const NV_PMC_BOOT_0: u32 = 0x0;
 /// CC state lives in secure scratch, bits 1:0: 0 off, 1 on, 3 devtools.
 const CC_STATE_HOPPER: u32 = 0x1182cc;
 const CC_STATE_BLACKWELL: u32 = 0x590;
+/// PPCIE state is bit 5 of that same Hopper scratch register.
+const PPCIE_STATE_HOPPER: u32 = 0x1182cc;
+const PPCIE_STATE_HOPPER_BIT: u32 = 0x20;
+const PPCIE_STATE_SWITCH: u32 = 0x28c50;
+const PPCIE_STATE_SWITCH_BIT: u32 = 0x1;
 const BOOT_COMPLETE_OK: u32 = 0xff;
 
 /// PCI addresses of all CC-capable NVIDIA GPUs on the node, sorted.
@@ -325,12 +388,184 @@ impl Gpu {
         Ok(())
     }
 
+    /// Hopper only, not Hopper-plus: Blackwell encrypts NVLink and reports
+    /// no PPCIE support (gpu-admin-tools `is_ppcie_query_supported`).
+    pub fn supports_ppcie(&self) -> bool {
+        self.chip.hopper
+    }
+
+    pub fn query_ppcie_mode(&self) -> Result<PpcieMode> {
+        ensure!(
+            self.supports_ppcie(),
+            "{}: {} does not support PPCIE (Hopper only)",
+            self.bdf(),
+            self.chip.name
+        );
+        self.wait_for_boot()?;
+        Ok(ppcie_state(
+            self.pci.read32(PPCIE_STATE_HOPPER),
+            PPCIE_STATE_HOPPER_BIT,
+        ))
+    }
+
+    /// Takes effect on reset, and only once every GPU and switch on the
+    /// baseboard carries the same mode.
+    pub fn set_ppcie_mode(&self, mode: PpcieMode) -> Result<()> {
+        ensure!(
+            self.supports_ppcie(),
+            "{}: {} does not support PPCIE (Hopper only)",
+            self.bdf(),
+            self.chip.name
+        );
+        let _ = self.wait_for_boot();
+        let rpc = FspRpc::emem(&self.pci)?;
+        apply_ppcie_plan(&rpc, mode, true).with_context(|| format!("{}: set PPCIE", self.bdf()))
+    }
+
     /// Function-level reset, then wait for the GPU to boot back up.
     /// This is what makes a previously set CC mode active.
     pub fn reset(&self) -> Result<()> {
         self.pci.sysfs_reset()?;
         self.wait_for_boot()
     }
+}
+
+fn ppcie_state(reg: u32, bit: u32) -> PpcieMode {
+    if reg & bit == bit {
+        PpcieMode::On
+    } else {
+        PpcieMode::Off
+    }
+}
+
+/// One NVSwitch generation, keyed by `NV_PMC_BOOT_0` rather than PCI
+/// device id — switches have no distinguishing id (gpu-admin-tools
+/// `NVSWITCH_MAP`).
+pub struct Switch {
+    pub name: &'static str,
+    pub boot0: u32,
+    /// Reads 0xff once the FSP has finished booting the switch.
+    pub boot_complete: u32,
+}
+
+/// LimeRock (gen2, boot0 0x6000a1) is absent: no FSP, so no PRC knobs.
+pub const SWITCHES: &[Switch] = &[Switch {
+    name: "NVSwitch_gen3",
+    boot0: 0x7000a1,
+    boot_complete: 0x660bc,
+}];
+
+pub fn switch_for(boot0: u32) -> Option<&'static Switch> {
+    SWITCHES.iter().find(|s| s.boot0 == boot0)
+}
+
+const PCI_CLASS_BRIDGE_OTHER: u32 = 0x0680;
+
+/// PCI addresses of all NVIDIA NVSwitches on the node, sorted.  Generation
+/// is only knowable from BAR0, so [`NvSwitch::open`] does that check.
+pub fn discover_switches(sysfs: &Sysfs) -> Result<Vec<String>> {
+    let mut bdfs = Vec::new();
+    for entry in std::fs::read_dir(sysfs.devices()).context("read sysfs PCI tree")? {
+        let entry = entry?;
+        let Some(bdf) = entry.file_name().to_str().and_then(normalize_bdf) else {
+            continue;
+        };
+        let dir = sysfs.devices().join(&bdf);
+        let vendor = attr_hex(&dir, "vendor").unwrap_or(0);
+        let class = attr_hex(&dir, "class").unwrap_or(0);
+        if vendor == 0x10de && class >> 8 == PCI_CLASS_BRIDGE_OTHER {
+            bdfs.push(bdf);
+        }
+    }
+    bdfs.sort();
+    Ok(bdfs)
+}
+
+/// One NVSwitch.  PPCIE is the only mode it carries; there is no
+/// per-switch CC.
+pub struct NvSwitch {
+    pci: PciDev,
+    pub switch: &'static Switch,
+}
+
+impl NvSwitch {
+    pub fn open(bdf: &str) -> Result<Self> {
+        Self::open_in(&Sysfs::default(), bdf)
+    }
+
+    pub fn open_in(sysfs: &Sysfs, bdf: &str) -> Result<Self> {
+        let pci = PciDev::open_in(sysfs, bdf)?;
+        ensure!(
+            pci.vendor == 0x10de,
+            "{}: vendor {:#06x} is not NVIDIA",
+            pci.bdf,
+            pci.vendor
+        );
+        let boot0 = pci.read32(NV_PMC_BOOT_0);
+        ensure!(boot0 != 0xffff_ffff, "{}: BAR0 not accessible", pci.bdf);
+        let switch = switch_for(boot0).with_context(|| {
+            format!(
+                "{}: NV_PMC_BOOT_0 {boot0:#010x} is not a PPCIE-capable NVSwitch",
+                pci.bdf
+            )
+        })?;
+        Ok(Self { pci, switch })
+    }
+
+    pub fn enumerate(sysfs: &Sysfs) -> Result<Vec<NvSwitch>> {
+        discover_switches(sysfs)?
+            .iter()
+            .map(|bdf| NvSwitch::open_in(sysfs, bdf))
+            .collect()
+    }
+
+    pub fn bdf(&self) -> &str {
+        &self.pci.bdf
+    }
+
+    pub fn wait_for_boot(&self) -> Result<()> {
+        poll("NVSwitch boot complete", Duration::from_secs(10), || {
+            self.pci.read32(self.switch.boot_complete) == BOOT_COMPLETE_OK
+        })?;
+
+        Ok(())
+    }
+
+    pub fn query_ppcie_mode(&self) -> Result<PpcieMode> {
+        self.wait_for_boot()?;
+        Ok(ppcie_state(
+            self.pci.read32(PPCIE_STATE_SWITCH),
+            PPCIE_STATE_SWITCH_BIT,
+        ))
+    }
+
+    /// EMEM, like Hopper: only Blackwell GPUs moved to MNOC, and
+    /// gpu-admin-tools gives GPU and switch the same `FspFalcon`.
+    pub fn set_ppcie_mode(&self, mode: PpcieMode) -> Result<()> {
+        let _ = self.wait_for_boot();
+        let rpc = FspRpc::emem(&self.pci)?;
+        apply_ppcie_plan(&rpc, mode, false).with_context(|| format!("{}: set PPCIE", self.bdf()))
+    }
+
+    pub fn reset(&self) -> Result<()> {
+        self.pci.sysfs_reset()?;
+        self.wait_for_boot()
+    }
+}
+
+fn apply_ppcie_plan(rpc: &FspRpc, mode: PpcieMode, bar0_decoupler: bool) -> Result<()> {
+    // Probe first so firmware too old for PPCIE is reported as that, and
+    // not as a failure of whichever knob the plan writes first.
+    if let Err(err) = rpc.knob_read(fsp::KNOB_PPCIE) {
+        if fsp::is_invalid_knob(&err) {
+            bail!("firmware does not support PPCIE; a firmware update is required");
+        }
+        return Err(err);
+    }
+    for (knob, value) in ppcie_knob_plan(mode, bar0_decoupler) {
+        rpc.knob_check_and_write(knob, value)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -348,6 +583,10 @@ mod tests {
     const GB100: u16 = 0x2901;
     /// A100: enumerable, but no CC.
     const AMPERE: u16 = 0x20b0;
+    /// An NVSwitch, which is known by its class and not this id.
+    const NVSWITCH: u16 = 0x22a3;
+    const NVSWITCH_CLASS: u32 = 0x068000;
+    const NVSWITCH_GEN3: u32 = 0x7000a1;
     const GPU_CLASS: u32 = 0x030200;
 
     /// The registers here sit megabytes apart, so a BAR0 file is sparse.
@@ -393,6 +632,28 @@ mod tests {
         (fake, firmware, gpu)
     }
 
+    fn modelled_switch() -> (Fake, Arc<Fsp>, NvSwitch) {
+        let fake = testfs::fake();
+        fake.add_device(BDF, None);
+        std::fs::write(fake.device(BDF).join("reset"), "").unwrap();
+
+        let switch = switch_for(NVSWITCH_GEN3).expect("a PPCIE-capable switch");
+        let firmware = Fsp::emem();
+        firmware.set_register(switch.boot_complete, BOOT_COMPLETE_OK);
+        let nvswitch = NvSwitch {
+            pci: PciDev::modelled(
+                fake.device(BDF),
+                BDF,
+                0x10de,
+                NVSWITCH,
+                Box::new(firmware.clone()),
+            ),
+            switch,
+        };
+
+        (fake, firmware, nvswitch)
+    }
+
     #[test]
     fn chip_lookup() {
         assert_eq!(chip_for(0x2330).unwrap().name, "GH100"); // H100 SXM
@@ -428,6 +689,103 @@ mod tests {
     }
 
     #[rstest]
+    #[case::off(PpcieMode::Off)]
+    #[case::on(PpcieMode::On)]
+    fn ppcie_mode_roundtrip(#[case] mode: PpcieMode) {
+        assert_eq!(mode.to_string().parse::<PpcieMode>().unwrap(), mode);
+    }
+
+    #[rstest]
+    #[case::devtools("devtools")]
+    #[case::empty("")]
+    fn ppcie_has_no_devtools_variant(#[case] input: &str) {
+        assert!(input.parse::<PpcieMode>().is_err());
+    }
+
+    #[rstest]
+    #[case::gpu(true)]
+    #[case::nvswitch(false)]
+    fn enabling_ppcie_turns_cc_off_first(#[case] bar0_decoupler: bool) {
+        let plan = ppcie_knob_plan(PpcieMode::On, bar0_decoupler);
+        let position = |knob| {
+            plan.iter()
+                .position(|(k, _)| *k == knob)
+                .unwrap_or_else(|| panic!("{knob:#x} is not in the plan: {plan:x?}"))
+        };
+        let ccm = position(fsp::KNOB_CCM);
+
+        assert!(
+            ccm < position(fsp::KNOB_PPCIE),
+            "CC must be cleared before PPCIE is set: {plan:x?}"
+        );
+        assert_eq!(plan[ccm].1, 0);
+        assert_eq!(plan.iter().find(|(k, _)| *k == fsp::KNOB_CCD).unwrap().1, 0);
+    }
+
+    #[rstest]
+    fn the_ppcie_knob_is_written_last() {
+        for mode in [PpcieMode::Off, PpcieMode::On] {
+            let plan = ppcie_knob_plan(mode, true);
+            assert_eq!(plan.last().unwrap().0, fsp::KNOB_PPCIE);
+            assert_eq!(plan.last().unwrap().1, u16::from(mode == PpcieMode::On));
+        }
+    }
+
+    #[rstest]
+    #[case::gpu_on(PpcieMode::On, true, 2)]
+    #[case::gpu_off(PpcieMode::Off, true, 0)]
+    #[case::switch_on(PpcieMode::On, false, 0)]
+    #[case::switch_off(PpcieMode::Off, false, 0)]
+    fn bar0_decoupler_is_a_gpu_only_filter(
+        #[case] mode: PpcieMode,
+        #[case] bar0_decoupler: bool,
+        #[case] expected: u16,
+    ) {
+        let plan = ppcie_knob_plan(mode, bar0_decoupler);
+        let value = plan
+            .iter()
+            .find(|(k, _)| *k == fsp::KNOB_BAR0_DECOUPLER)
+            .unwrap()
+            .1;
+        assert_eq!(value, expected);
+    }
+
+    #[rstest]
+    fn disabling_ppcie_leaves_the_cc_knobs_alone() {
+        let plan = ppcie_knob_plan(PpcieMode::Off, true);
+        assert_eq!(
+            plan,
+            vec![(fsp::KNOB_BAR0_DECOUPLER, 0), (fsp::KNOB_PPCIE, 0)]
+        );
+    }
+
+    #[rstest]
+    #[case::hopper_off(0x0000_0000, PPCIE_STATE_HOPPER_BIT, PpcieMode::Off)]
+    #[case::hopper_on(0x0000_0020, PPCIE_STATE_HOPPER_BIT, PpcieMode::On)]
+    // CC and PPCIE share this register; its low bits are not PPCIE.
+    #[case::hopper_cc_on(0x0000_0001, PPCIE_STATE_HOPPER_BIT, PpcieMode::Off)]
+    #[case::switch_off(0x0000_0000, PPCIE_STATE_SWITCH_BIT, PpcieMode::Off)]
+    #[case::switch_on(0x0000_0001, PPCIE_STATE_SWITCH_BIT, PpcieMode::On)]
+    fn ppcie_state_decoding(#[case] reg: u32, #[case] bit: u32, #[case] expected: PpcieMode) {
+        assert_eq!(ppcie_state(reg, bit), expected);
+    }
+
+    #[rstest]
+    fn switch_lookup_is_laguna_plus_only() {
+        assert_eq!(switch_for(0x7000a1).unwrap().name, "NVSwitch_gen3");
+        assert_eq!(switch_for(0x7000a1).unwrap().boot_complete, 0x660bc);
+        assert!(switch_for(0x6000a1).is_none(), "LimeRock has no FSP");
+    }
+
+    #[rstest]
+    #[case::h100(0x2330, true)]
+    #[case::gb100(0x2901, false)]
+    #[case::gb202(0x2b85, false)]
+    fn ppcie_is_hopper_only(#[case] devid: u16, #[case] expected: bool) {
+        assert_eq!(chip_for(devid).unwrap().hopper, expected);
+    }
+
+    #[rstest]
     #[case::gh200(GH200, true)]
     #[case::h100_sxm(GH100, false)]
     fn c2c_is_the_coherently_attached_parts(#[case] devid: u16, #[case] expected: bool) {
@@ -449,6 +807,21 @@ mod tests {
         );
     }
 
+    /// Class rather than device id: switches have no distinguishing one.
+    #[rstest]
+    fn switch_discovery_lists_nvidia_bridges_in_address_order(fake: Fake) {
+        fake.add_pci_device("0000:0a:00.0", 0x10de, NVSWITCH, NVSWITCH_CLASS, None);
+        fake.add_pci_device("0000:09:00.0", 0x10de, NVSWITCH, NVSWITCH_CLASS, None);
+        fake.add_pci_device("0000:0b:00.0", 0x1af4, 0x1000, NVSWITCH_CLASS, None);
+        fake.add_pci_device("0000:0c:00.0", 0x10de, GH100, GPU_CLASS, None);
+        std::fs::create_dir(fake.sysfs.devices().join("not-an-address")).unwrap();
+
+        assert_eq!(
+            discover_switches(&fake.sysfs).unwrap(),
+            ["0000:09:00.0", "0000:0a:00.0"]
+        );
+    }
+
     /// A caller told there are no GPUs would configure nothing and call it
     /// done.
     #[rstest]
@@ -456,6 +829,7 @@ mod tests {
         std::fs::remove_dir(fake.sysfs.devices()).unwrap();
 
         assert!(discover(&fake.sysfs).is_err());
+        assert!(discover_switches(&fake.sysfs).is_err());
     }
 
     #[rstest]
@@ -520,11 +894,12 @@ mod tests {
         assert!(err.contains(expected), "{err}");
     }
 
-    /// The entry point that reads the running kernel, so all a test can
-    /// hold it to is refusing an address before it looks.
+    /// The two entry points that read the running kernel, so all a test can
+    /// hold them to is refusing an address before they look.
     #[rstest]
     fn opening_by_address_alone_reads_the_running_kernel() {
         assert!(Gpu::open("nonsense").is_err());
+        assert!(NvSwitch::open("nonsense").is_err());
     }
 
     #[rstest]
@@ -576,8 +951,8 @@ mod tests {
         }
     }
 
-    /// Protected PCIe and per-GPU CC are mutually exclusive in the
-    /// firmware, as are the three Hopper knobs that predate CC.
+    /// Both PPCIE and the three Hopper knobs that predate CC are mutually
+    /// exclusive with it in the firmware.
     #[rstest]
     fn enabling_cc_on_hopper_clears_what_conflicts_with_it() {
         let (_fake, firmware, gpu) = modelled_gpu(GH100);
@@ -641,10 +1016,145 @@ mod tests {
     }
 
     #[rstest]
+    #[case::off(0x0000_0000, PpcieMode::Off)]
+    #[case::on(0x0000_0020, PpcieMode::On)]
+    fn a_hopper_gpu_reports_the_ppcie_mode_it_is_running(
+        #[case] state: u32,
+        #[case] expected: PpcieMode,
+    ) {
+        let (_fake, firmware, gpu) = modelled_gpu(GH100);
+        firmware.set_register(PPCIE_STATE_HOPPER, state);
+
+        assert!(gpu.supports_ppcie());
+        assert_eq!(gpu.query_ppcie_mode().unwrap(), expected);
+    }
+
+    #[rstest]
+    fn a_blackwell_gpu_has_no_ppcie_mode_either_way() {
+        let (_fake, _firmware, gpu) = modelled_gpu(GB100);
+        assert!(!gpu.supports_ppcie());
+
+        for err in [
+            why(gpu.query_ppcie_mode()),
+            why(gpu.set_ppcie_mode(PpcieMode::On)),
+        ] {
+            assert!(err.contains("does not support PPCIE"), "{err}");
+        }
+    }
+
+    #[rstest]
+    fn setting_ppcie_on_a_gpu_clears_its_cc_knobs_first() {
+        let (_fake, firmware, gpu) = modelled_gpu(GH100);
+        firmware.set_knob(fsp::KNOB_CCM, 1);
+
+        gpu.set_ppcie_mode(PpcieMode::On).unwrap();
+
+        assert_eq!(firmware.knob(fsp::KNOB_CCM), Some(0));
+        assert_eq!(firmware.knob(fsp::KNOB_PPCIE), Some(1));
+        assert_eq!(firmware.knob(fsp::KNOB_BAR0_DECOUPLER), Some(2));
+    }
+
+    #[rstest]
+    fn setting_ppcie_on_firmware_without_the_knob_says_so() {
+        let (_fake, firmware, gpu) = modelled_gpu(GH100);
+        firmware.forget_knob(fsp::KNOB_PPCIE);
+
+        let err = why(gpu.set_ppcie_mode(PpcieMode::On));
+
+        assert!(err.contains("firmware does not support PPCIE"), "{err}");
+        assert_eq!(firmware.writes(), 0);
+    }
+
+    #[rstest]
+    fn setting_ppcie_reports_a_failure_that_is_not_a_missing_knob() {
+        let (_fake, firmware, gpu) = modelled_gpu(GH100);
+        firmware.fail(Fault::Completion(0x5));
+
+        let err = why(gpu.set_ppcie_mode(PpcieMode::On));
+
+        assert!(err.contains("set PPCIE"), "{err}");
+        assert!(err.contains("completion code 0x5"), "{err}");
+    }
+
+    #[rstest]
     fn resetting_a_gpu_goes_through_sysfs_and_waits_for_boot() {
         let (fake, _firmware, gpu) = modelled_gpu(GH100);
 
         gpu.reset().unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(fake.device(BDF).join("reset")).unwrap(),
+            "1"
+        );
+    }
+
+    #[rstest]
+    fn opening_a_switch_names_its_generation(fake: Fake) {
+        fake.add_mappable_device(BDF, 0x10de, NVSWITCH, NVSWITCH_CLASS, BAR0_LEN);
+        fake.set_register(BDF, NV_PMC_BOOT_0 as u64, NVSWITCH_GEN3);
+
+        let switch = NvSwitch::open_in(&fake.sysfs, BDF).unwrap();
+
+        assert_eq!((switch.switch.name, switch.bdf()), ("NVSwitch_gen3", BDF));
+    }
+
+    #[rstest]
+    #[case::another_vendor(0x1af4, NVSWITCH_GEN3, "is not NVIDIA")]
+    #[case::bar0_inaccessible(0x10de, 0xffff_ffff, "BAR0 not accessible")]
+    #[case::limerock(0x10de, 0x6000a1, "not a PPCIE-capable NVSwitch")]
+    fn opening_refuses_what_is_not_a_ppcie_capable_switch(
+        fake: Fake,
+        #[case] vendor: u16,
+        #[case] boot0: u32,
+        #[case] expected: &str,
+    ) {
+        fake.add_mappable_device(BDF, vendor, NVSWITCH, NVSWITCH_CLASS, BAR0_LEN);
+        fake.set_register(BDF, NV_PMC_BOOT_0 as u64, boot0);
+
+        let err = why(NvSwitch::open_in(&fake.sysfs, BDF));
+
+        assert!(err.contains(expected), "{err}");
+    }
+
+    #[rstest]
+    fn switch_enumeration_opens_every_switch_it_discovers(fake: Fake) {
+        fake.add_mappable_device(BDF, 0x10de, NVSWITCH, NVSWITCH_CLASS, BAR0_LEN);
+        fake.set_register(BDF, NV_PMC_BOOT_0 as u64, NVSWITCH_GEN3);
+
+        let switches = NvSwitch::enumerate(&fake.sysfs).unwrap();
+
+        assert_eq!(switches.len(), 1);
+        assert_eq!(switches[0].bdf(), BDF);
+    }
+
+    #[rstest]
+    #[case::off(0x0000_0000, PpcieMode::Off)]
+    #[case::on(0x0000_0001, PpcieMode::On)]
+    fn a_switch_reports_the_ppcie_mode_it_is_running(
+        #[case] state: u32,
+        #[case] expected: PpcieMode,
+    ) {
+        let (_fake, firmware, switch) = modelled_switch();
+        firmware.set_register(PPCIE_STATE_SWITCH, state);
+
+        assert_eq!(switch.query_ppcie_mode().unwrap(), expected);
+    }
+
+    #[rstest]
+    fn setting_ppcie_on_a_switch_leaves_the_decoupler_off() {
+        let (_fake, firmware, switch) = modelled_switch();
+
+        switch.set_ppcie_mode(PpcieMode::On).unwrap();
+
+        assert_eq!(firmware.knob(fsp::KNOB_PPCIE), Some(1));
+        assert_eq!(firmware.knob(fsp::KNOB_BAR0_DECOUPLER), Some(0));
+    }
+
+    #[rstest]
+    fn resetting_a_switch_goes_through_sysfs_and_waits_for_boot() {
+        let (fake, _firmware, switch) = modelled_switch();
+
+        switch.reset().unwrap();
 
         assert_eq!(
             std::fs::read_to_string(fake.device(BDF).join("reset")).unwrap(),
