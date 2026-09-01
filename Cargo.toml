@@ -7,7 +7,10 @@ authors = ["The Kata Containers community <kata-dev@lists.katacontainers.io>"]
 repository = "https://github.com/kata-containers/pcilibs-rs.git"
 homepage = "https://katacontainers.io/"
 readme = "README.md"
-license = "Apache-2.0"
+# src/cc/ and src/pci_dev.rs are MIT, carrying NVIDIA's copyright: they are a
+# port of gpu-admin-tools. Everything else is Apache-2.0. Per-file SPDX
+# headers say which is which.
+license = "Apache-2.0 AND MIT"
 edition = "2021"
 # The newest thing the source asks for is io::ErrorKind::ResourceBusy.
 rust-version = "1.83"
