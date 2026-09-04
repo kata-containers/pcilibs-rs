@@ -9,6 +9,8 @@ homepage = "https://katacontainers.io/"
 readme = "README.md"
 license = "Apache-2.0"
 edition = "2021"
+# The newest thing the source asks for is io::ErrorKind::ResourceBusy.
+rust-version = "1.83"
 
 [features]
 # Fake sysfs and /dev/vfio trees. For dev-dependencies only.
