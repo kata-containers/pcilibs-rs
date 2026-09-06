@@ -107,6 +107,22 @@ impl Fake {
         std::os::unix::fs::symlink(path, self.device(address).join("iommu_group")).unwrap();
     }
 
+    pub fn add_infiniband(&self, name: &str, address: &str, node_type: &str, fw_ver: &str) {
+        let path = self.sysfs.infiniband().join(name);
+        fs::create_dir_all(&path).unwrap();
+        std::os::unix::fs::symlink(self.device(address), path.join("device")).unwrap();
+        fs::write(path.join("node_type"), format!("{node_type}\n")).unwrap();
+        fs::write(path.join("fw_ver"), format!("{fw_ver}\n")).unwrap();
+    }
+
+    /// `dev` is the cdev's `<major>:<minor>`, as sysfs prints it.
+    pub fn add_infiniband_verbs(&self, name: &str, ibdev: &str, dev: &str) {
+        let path = self.sysfs.infiniband_verbs().join(name);
+        fs::create_dir_all(&path).unwrap();
+        fs::write(path.join("ibdev"), format!("{ibdev}\n")).unwrap();
+        fs::write(path.join("dev"), format!("{dev}\n")).unwrap();
+    }
+
     pub fn driver_override(&self, address: &str) -> String {
         read(self.device(address).join("driver_override"))
     }

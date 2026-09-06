@@ -9,7 +9,7 @@ use std::fs;
 use std::io;
 use std::path::PathBuf;
 
-use crate::pci_ids::{Classes, Vendors};
+use crate::pci_ids::{Class, Device, FromId};
 
 use crate::{normalize_bdf, Sysfs};
 
@@ -124,23 +124,15 @@ impl PCIDeviceManager {
             .map(|numa| numa.trim().parse::<i64>().unwrap_or(-1))
             .unwrap_or(-1);
 
-        let mut device_name = UNKNOWN_DEVICE.to_string();
-        for vendor in Vendors::iter() {
-            for device in vendor.devices() {
-                if vendor.id() == vendor_id && device.id() == device_id {
-                    device_name = device.name().to_owned();
-                    break;
-                }
-            }
-        }
+        let device_name = Device::from_vid_pid(vendor_id, device_id)
+            .map_or(UNKNOWN_DEVICE, |device| device.name())
+            .to_owned();
 
-        let mut class_name = UNKNOWN_CLASS.to_string();
-        for class in Classes::iter() {
-            if u32::from(class.id()) == class_id {
-                class_name = class.name().to_owned();
-                break;
-            }
-        }
+        // sysfs prints the whole 24-bit class code; the database is keyed on
+        // the base class in its top byte.
+        let class_name = Class::from_id((class_id >> 16) as u8)
+            .map_or(UNKNOWN_CLASS, |class| class.name())
+            .to_owned();
 
         let pci_device = PCIDevice {
             device_path,
@@ -177,98 +169,234 @@ pub fn is_pcie_device(bdf: &str, sysfs: &Sysfs) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
-    use std::io::Write;
+    use crate::testfs::{self, Fake};
 
-    use rstest::rstest;
+    use rstest::{fixture, rstest};
 
-    // domain number
-    const TEST_PCI_DEV_DOMAIN: &str = "0000";
+    /// An e1000 as a QEMU guest sees one: the database knows both its ids
+    /// and its class.
+    const E1000: (u16, u16, u32) = (0x8086, 0x100e, 0x020000);
 
-    // Mock data
-    fn setup_mock_device_files() -> tempfile::TempDir {
-        let dir = tempfile::tempdir().expect("tempdir should not fail");
-        // Create mock path and files for PCI devices
-        let device_path = Sysfs::new(dir.path()).device("0000:ff:1f.0").unwrap();
-        fs::create_dir_all(&device_path).unwrap();
-        fs::write(device_path.join("vendor"), "0x8086").unwrap();
-        fs::write(device_path.join("device"), "0x1234").unwrap();
-        fs::write(device_path.join("class"), "0x060100").unwrap();
-        fs::write(device_path.join("numa_node"), "0").unwrap();
-        dir
+    #[fixture]
+    fn fake() -> Fake {
+        testfs::fake()
     }
 
-    #[test]
-    fn test_get_all_devices() {
-        // Setup mock data
-        let tmpdir = setup_mock_device_files();
+    fn manager(fake: &Fake) -> PCIDeviceManager {
+        PCIDeviceManager::new(fake.sysfs.clone())
+    }
 
-        // Initialize PCI device manager with the mock path
-        let manager = PCIDeviceManager::new(Sysfs::new(tmpdir.path()));
+    #[rstest]
+    fn enumeration_reads_a_device_and_names_it(fake: Fake) {
+        let (vendor, device, class) = E1000;
+        fake.add_pci_device("0000:ff:1f.0", vendor, device, class, Some("igb"));
 
-        // Get all devices
-        let devices_result = manager.get_all_devices(None);
+        let devices = manager(&fake).get_all_devices(None).unwrap();
 
-        assert!(devices_result.is_ok());
-        let devices = devices_result.unwrap();
         assert_eq!(devices.len(), 1);
+        let found = &devices[0];
+        assert_eq!(found.address, "0000:ff:1f.0");
+        assert_eq!(found.device_path, fake.device("0000:ff:1f.0"));
+        assert_eq!(found.vendor, vendor);
+        assert_eq!(found.device, device);
+        assert_eq!(found.class, class);
+        assert_eq!(found.device_name, "82540EM Gigabit Ethernet Controller");
+        assert_eq!(found.class_name, "Network controller");
+        assert_eq!(found.driver, "igb");
+        assert_eq!(found.numa_node, 0);
+    }
 
-        let device = &devices[0];
-        assert_eq!(device.vendor, 0x8086);
-        assert_eq!(device.device, 0x1234);
-        assert_eq!(device.class, 0x060100);
+    /// A device the database has not heard of is still a device the caller
+    /// asked about, so it comes back unknown rather than dropped.
+    #[rstest]
+    fn enumeration_reports_a_device_the_database_does_not_know(fake: Fake) {
+        fake.add_pci_device("0000:65:00.0", 0xeeee, 0xeeee, 0x200000, None);
+
+        let devices = manager(&fake).get_all_devices(None).unwrap();
+
+        assert_eq!(devices[0].device_name, UNKNOWN_DEVICE);
+        assert_eq!(devices[0].class_name, UNKNOWN_CLASS);
+        assert_eq!(devices[0].driver, "");
+    }
+
+    /// The base class, not the whole 24-bit code: comparing the two is what
+    /// used to leave every device UNKNOWN_CLASS.
+    #[rstest]
+    fn a_class_name_comes_from_the_base_class(fake: Fake) {
+        fake.add_pci_device("0000:03:00.0", 0x10de, 0x2330, 0x030200, None);
+
+        let devices = manager(&fake).get_all_devices(None).unwrap();
+
+        assert_eq!(devices[0].class_name, "Display controller");
+        assert_eq!(devices[0].device_name, "GH100 [H100 SXM5 80GB]");
+    }
+
+    /// Bus order, not the order the directory happened to list them in.
+    #[rstest]
+    fn enumeration_sorts_by_address(fake: Fake) {
+        let (vendor, device, class) = E1000;
+        for address in [
+            "0000:ff:1f.0",
+            "0001:00:00.0",
+            "0000:03:00.1",
+            "0000:03:00.0",
+        ] {
+            fake.add_pci_device(address, vendor, device, class, None);
+        }
+
+        let devices = manager(&fake).get_all_devices(None).unwrap();
+
+        assert_eq!(
+            devices
+                .iter()
+                .map(|d| d.address.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "0000:03:00.0",
+                "0000:03:00.1",
+                "0000:ff:1f.0",
+                "0001:00:00.0"
+            ]
+        );
+    }
+
+    #[rstest]
+    fn a_vendor_filter_keeps_only_that_vendor(fake: Fake) {
+        let (vendor, device, class) = E1000;
+        fake.add_pci_device("0000:03:00.0", 0x10de, 0x2330, 0x030200, None);
+        fake.add_pci_device("0000:65:00.0", vendor, device, class, None);
+
+        let devices = manager(&fake).get_all_devices(Some(0x10de)).unwrap();
+
+        assert_eq!(devices.len(), 1);
+        assert_eq!(devices[0].address, "0000:03:00.0");
+    }
+
+    #[rstest]
+    fn a_device_reports_the_iommu_group_it_is_in(fake: Fake) {
+        fake.add_pci_device("0000:03:00.0", 0x10de, 0x2330, 0x030200, Some("vfio-pci"));
+        fake.set_iommu_group("0000:03:00.0", 17);
+
+        let devices = manager(&fake).get_all_devices(None).unwrap();
+
+        assert_eq!(devices[0].iommu_group, 17);
+    }
+
+    /// The IOMMU being off is not an error: no group is what tells a caller
+    /// the device cannot be passed through.
+    #[rstest]
+    fn a_device_outside_an_iommu_group_reports_none(fake: Fake) {
+        let (vendor, device, class) = E1000;
+        fake.add_pci_device("0000:03:00.0", vendor, device, class, None);
+
+        let devices = manager(&fake).get_all_devices(None).unwrap();
+
+        assert_eq!(devices[0].iommu_group, -1);
+    }
+
+    /// Removing the tree is what proves the second read never reached
+    /// sysfs; the two spellings prove one device is one entry.
+    #[rstest]
+    fn a_second_lookup_of_a_device_comes_from_the_cache(fake: Fake) {
+        fake.add_pci_device("0000:03:00.0", 0x10de, 0x2330, 0x030200, None);
+        let manager = manager(&fake);
+        let mut cache = HashMap::new();
+
+        let first = manager
+            .get_device_by_pci_bus_id("03:00.0", None, &mut cache)
+            .unwrap()
+            .expect("the device should be found");
+        fs::remove_dir_all(fake.device("0000:03:00.0")).unwrap();
+        let cached = manager
+            .get_device_by_pci_bus_id("0000:03:00.0", None, &mut cache)
+            .unwrap()
+            .expect("the device should still be found");
+
+        assert_eq!(cache.len(), 1);
+        assert_eq!(cached.address, first.address);
+        assert_eq!(cached.device_name, first.device_name);
+    }
+
+    /// Enumeration and direct lookup have to agree on one spelling, or the
+    /// cache keys and the addresses handed back drift apart.
+    #[rstest]
+    fn a_lookup_canonicalises_the_address_it_reports(fake: Fake) {
+        let (vendor, device, class) = E1000;
+        fake.add_pci_device("0000:ff:1f.0", vendor, device, class, None);
+
+        let found = manager(&fake)
+            .get_device_by_pci_bus_id("FF:1F.0", None, &mut HashMap::new())
+            .unwrap()
+            .expect("the device should be found");
+
+        assert_eq!(found.address, "0000:ff:1f.0");
     }
 
     /// A lookup joins its argument onto the sysfs root, so anything that is
     /// not a PCI address has to be refused rather than followed.
     #[rstest]
-    #[case("../../../etc/shadow")]
-    #[case("0000:ff:1f.0/../../..")]
-    #[case("/etc/shadow")]
-    #[case("nonsense")]
-    fn a_lookup_refuses_an_address_that_is_not_one(#[case] address: &str) {
-        let tmpdir = setup_mock_device_files();
-        let manager = PCIDeviceManager::new(Sysfs::new(tmpdir.path()));
-
-        let err = manager
+    #[case::traversal("../../../etc/shadow")]
+    #[case::separator("0000:ff:1f.0/../../..")]
+    #[case::absolute("/etc/shadow")]
+    #[case::nonsense("nonsense")]
+    fn a_lookup_refuses_an_address_that_is_not_one(fake: Fake, #[case] address: &str) {
+        let err = manager(&fake)
             .get_device_by_pci_bus_id(address, None, &mut HashMap::new())
             .unwrap_err();
 
         assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
     }
 
-    /// Enumeration and direct lookup have to agree on one spelling, or the
-    /// cache keys and the addresses handed back drift apart.
-    #[test]
-    fn a_lookup_canonicalises_the_address_it_reports() {
-        let tmpdir = setup_mock_device_files();
-        let manager = PCIDeviceManager::new(Sysfs::new(tmpdir.path()));
+    /// A vendor id that will not parse means the tree is not sysfs, which
+    /// beats handing back a device with a made-up vendor.
+    #[rstest]
+    fn a_lookup_refuses_a_vendor_id_it_cannot_parse(fake: Fake) {
+        fake.add_device("0000:03:00.0", None);
+        fs::write(fake.device("0000:03:00.0").join("vendor"), "nonsense\n").unwrap();
 
-        let device = manager
-            .get_device_by_pci_bus_id("FF:1F.0", None, &mut HashMap::new())
-            .unwrap()
-            .expect("the mock device should be found");
+        let err = manager(&fake)
+            .get_device_by_pci_bus_id("0000:03:00.0", None, &mut HashMap::new())
+            .unwrap_err();
 
-        assert_eq!(device.address, "0000:ff:1f.0");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
     }
 
-    #[test]
-    fn test_is_pcie_device() {
-        // Create a mock PCI device config file
-        let bdf = format!("{TEST_PCI_DEV_DOMAIN}:ff:00.0");
-        let tmpdir = tempfile::tempdir().expect("tempdir should not fail");
-        let config_path = Sysfs::new(tmpdir.path())
-            .device(&bdf)
-            .unwrap()
-            .join("config");
-        let _ = fs::create_dir_all(config_path.parent().unwrap());
+    #[rstest]
+    fn a_lookup_of_a_device_that_is_not_there_fails(fake: Fake) {
+        let err = manager(&fake)
+            .get_device_by_pci_bus_id("0000:03:00.0", None, &mut HashMap::new())
+            .unwrap_err();
 
-        // Write a file with a size larger than PCI_CONFIG_SPACE_SZ
-        let mut file = fs::File::create(&config_path).unwrap();
-        // Test size greater than PCI_CONFIG_SPACE_SZ
-        file.write_all(&vec![0; 512]).unwrap();
+        assert_eq!(err.kind(), io::ErrorKind::NotFound);
+    }
 
-        // It should be true
-        assert!(is_pcie_device("ff:00.0", &Sysfs::new(tmpdir.path())));
+    /// Exactly 256 bytes is a conventional PCI function; the boundary is
+    /// the whole test.
+    #[rstest]
+    #[case::pcie(PCI_CONFIG_SPACE_SZ + 1, true)]
+    #[case::conventional_pci(PCI_CONFIG_SPACE_SZ, false)]
+    fn a_pcie_function_has_an_extended_config_space(
+        fake: Fake,
+        #[case] size: u64,
+        #[case] expected: bool,
+    ) {
+        fake.add_device("0000:ff:00.0", None);
+        fs::write(
+            fake.device("0000:ff:00.0").join("config"),
+            vec![0; size as usize],
+        )
+        .unwrap();
+
+        assert_eq!(is_pcie_device("ff:00.0", &fake.sysfs), expected);
+    }
+
+    #[rstest]
+    #[case::no_config_space("0000:ff:00.0")]
+    #[case::no_such_device("0000:03:00.0")]
+    #[case::not_an_address("../../../etc")]
+    fn without_a_config_space_a_device_is_not_pcie(fake: Fake, #[case] address: &str) {
+        fake.add_device("0000:ff:00.0", None);
+
+        assert!(!is_pcie_device(address, &fake.sysfs));
     }
 }

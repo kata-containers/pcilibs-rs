@@ -188,6 +188,16 @@ mod tests {
     }
 
     #[test]
+    fn class_prefix_drops_the_prog_if_byte() {
+        let root = TempDir::new().unwrap();
+        add(root.path(), 0, "0x10de", "0x2330", "0x030200");
+
+        let devs = enumerate_iommufd(root.path(), &Sysfs::new(root.path()));
+
+        assert_eq!(devs[0].class_prefix(), 0x0302);
+    }
+
+    #[test]
     fn missing_sysfs_entry_skipped() {
         let root = TempDir::new().unwrap();
         let devices = root.path().join("devices");

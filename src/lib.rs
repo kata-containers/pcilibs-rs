@@ -13,9 +13,9 @@ pub mod vfio;
 
 use std::fs;
 use std::os::unix::fs::MetadataExt;
-use std::os::unix::prelude::FileTypeExt;
+use std::path::Path;
 
-use nix::sys::stat;
+use nix::sys::stat::{self, SFlag};
 
 pub use iommufd::{
     enumerate_iommufd, is_passthrough_capable_class, lookup_iommufd_dev, IommufdDev,
@@ -78,15 +78,31 @@ pub fn is_vfio_device_type(device_type: &str) -> bool {
     )
 }
 
-/// One-line summary of every `/sys/class/infiniband*` device the
-/// guest kernel currently exposes, plus every char device under
-/// `/dev/infiniband/` and the PCI BDF backing each IB device.
+/// Root of the InfiniBand character device tree.  Devfs rather than sysfs,
+/// so it stays a path of its own.
+pub const INFINIBAND_DEV_DIR: &str = "/dev/infiniband";
+
+fn device_kind(mode: u32) -> &'static str {
+    let kind = SFlag::from_bits_truncate(mode) & SFlag::S_IFMT;
+    if kind == SFlag::S_IFCHR {
+        "char"
+    } else if kind == SFlag::S_IFBLK {
+        "block"
+    } else {
+        "other"
+    }
+}
+
+/// One-line summary of every InfiniBand device the guest kernel currently
+/// exposes, plus every device node under `dev_dir` and the PCI BDF backing
+/// each IB device.
 ///
 /// Pure sysfs / devfs reads — no agent-specific dependencies.
-/// Used as a diagnostic context string in log calls.
-pub fn snapshot_infiniband() -> String {
+/// Used as a diagnostic context string in log calls, so it never fails: a
+/// missing tree is itself the diagnosis.
+pub fn snapshot_infiniband(dev_dir: &Path, sysfs: &Sysfs) -> String {
     let mut ib_parts: Vec<String> = Vec::new();
-    if let Ok(entries) = fs::read_dir("/sys/class/infiniband") {
+    if let Ok(entries) = fs::read_dir(sysfs.infiniband()) {
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().into_owned();
             let path = entry.path();
@@ -107,7 +123,7 @@ pub fn snapshot_infiniband() -> String {
     }
 
     let mut verbs_parts: Vec<String> = Vec::new();
-    if let Ok(entries) = fs::read_dir("/sys/class/infiniband_verbs") {
+    if let Ok(entries) = fs::read_dir(sysfs.infiniband_verbs()) {
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().into_owned();
             if !name.starts_with("uverbs") {
@@ -125,20 +141,14 @@ pub fn snapshot_infiniband() -> String {
     }
 
     let mut chardev_parts: Vec<String> = Vec::new();
-    if let Ok(entries) = fs::read_dir("/dev/infiniband") {
+    if let Ok(entries) = fs::read_dir(dev_dir) {
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().into_owned();
             let metadata = match entry.metadata() {
                 Ok(m) => m,
                 Err(_) => continue,
             };
-            let kind = if metadata.file_type().is_char_device() {
-                "char"
-            } else if metadata.file_type().is_block_device() {
-                "block"
-            } else {
-                "other"
-            };
+            let kind = device_kind(metadata.mode());
             let rdev = metadata.rdev();
             let major = stat::major(rdev);
             let minor = stat::minor(rdev);
@@ -189,5 +199,105 @@ mod tests {
         assert!(is_vfio_device_type(DRIVER_VFIO_AP_TYPE));
         assert!(is_vfio_device_type(DRIVER_VFIO_AP_COLD_TYPE));
         assert!(!is_vfio_device_type("virtio-pci"));
+    }
+
+    /// A test cannot mknod a device node, so the mode bits stand in for what
+    /// `stat` would have answered.
+    #[rstest::rstest]
+    #[case::character_device(SFlag::S_IFCHR, "char")]
+    #[case::block_device(SFlag::S_IFBLK, "block")]
+    #[case::regular_file(SFlag::S_IFREG, "other")]
+    #[case::directory(SFlag::S_IFDIR, "other")]
+    #[case::fifo(SFlag::S_IFIFO, "other")]
+    fn a_device_node_is_named_by_its_type(#[case] kind: SFlag, #[case] expected: &str) {
+        assert_eq!(device_kind(kind.bits() | 0o600), expected);
+    }
+
+    /// Log context, so no RDMA has to read as "nothing here" rather than
+    /// fail the caller.
+    #[test]
+    fn a_snapshot_of_a_guest_without_rdma_lists_nothing() {
+        let fake = testfs::fake();
+
+        assert_eq!(
+            snapshot_infiniband(Path::new("/no/such/dev/infiniband"), &fake.sysfs),
+            "ib_devices=[] uverbs=[] chardevs=[]"
+        );
+    }
+
+    #[test]
+    fn a_snapshot_names_a_device_after_the_pci_function_behind_it() {
+        let fake = testfs::fake();
+        fake.add_device("0000:03:00.0", Some("mlx5_core"));
+        fake.add_infiniband("mlx5_0", "03:00.0", "1: CA", "28.43.2026");
+        fake.add_infiniband_verbs("uverbs0", "mlx5_0", "231:192");
+
+        let snapshot = snapshot_infiniband(Path::new("/no/such/dev/infiniband"), &fake.sysfs);
+
+        assert!(
+            snapshot.contains(r#"mlx5_0=[bdf=0000:03:00.0,node_type="1: CA",fw=28.43.2026]"#),
+            "{snapshot}"
+        );
+        assert!(
+            snapshot.contains("uverbs0=[ibdev=mlx5_0,dev=231:192]"),
+            "{snapshot}"
+        );
+    }
+
+    /// A device whose attributes will not read is the diagnosis, so it gets
+    /// reported rather than dropped.
+    #[test]
+    fn a_snapshot_lists_a_device_it_could_not_read() {
+        let fake = testfs::fake();
+        fs::create_dir_all(fake.sysfs.infiniband().join("mlx5_0")).unwrap();
+        fs::create_dir_all(fake.sysfs.infiniband_verbs().join("uverbs0")).unwrap();
+
+        let snapshot = snapshot_infiniband(Path::new("/no/such/dev/infiniband"), &fake.sysfs);
+
+        assert!(
+            snapshot.contains(r#"mlx5_0=[bdf=<none>,node_type="",fw=]"#),
+            "{snapshot}"
+        );
+        assert!(snapshot.contains("uverbs0=[ibdev=,dev=]"), "{snapshot}");
+    }
+
+    /// `infiniband_verbs` holds an `abi_version` file beside the devices,
+    /// which would otherwise be reported as a device with nothing readable.
+    #[test]
+    fn a_snapshot_skips_what_is_not_a_verbs_device() {
+        let fake = testfs::fake();
+        let verbs = fake.sysfs.infiniband_verbs();
+        fs::create_dir_all(&verbs).unwrap();
+        fs::write(verbs.join("abi_version"), "6\n").unwrap();
+
+        let snapshot = snapshot_infiniband(Path::new("/no/such/dev/infiniband"), &fake.sysfs);
+
+        assert_eq!(snapshot, "ib_devices=[] uverbs=[] chardevs=[]");
+    }
+
+    /// Against the real `/dev`, since a test cannot create a device node:
+    /// `/dev/null` is a character device at 1:3 on every Linux kernel.
+    #[test]
+    fn a_snapshot_reports_a_device_node_by_major_and_minor() {
+        let fake = testfs::fake();
+
+        let snapshot = snapshot_infiniband(Path::new("/dev"), &fake.sysfs);
+
+        assert!(snapshot.contains("null=[char,1:3]"), "{snapshot}");
+    }
+
+    #[test]
+    fn a_snapshot_reports_what_is_not_a_device_node() {
+        let fake = testfs::fake();
+        let dev_dir = fake.root().join("dev/infiniband");
+        fs::create_dir_all(&dev_dir).unwrap();
+        fs::write(dev_dir.join("uverbs0"), "").unwrap();
+
+        let snapshot = snapshot_infiniband(&dev_dir, &fake.sysfs);
+
+        assert!(
+            snapshot.contains("chardevs=[uverbs0=[other,0:0]]"),
+            "{snapshot}"
+        );
     }
 }
