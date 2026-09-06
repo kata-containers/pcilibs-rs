@@ -2,7 +2,7 @@ name: Release
 
 # The version lives in Cargo.toml. Bump it through a normal PR; once it lands
 # on main this workflow reads the version, and if the matching tag does not
-# exist yet it tags, publishes to crates.io, and cuts the GitHub Release, all
+# exist yet it publishes to crates.io, tags, and cuts the GitHub Release, all
 # by itself. Nothing is released while the version is unchanged.
 on:
   push:
@@ -31,6 +31,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           fetch-depth: 0
       - name: Decide whether to release
         id: decide
@@ -47,23 +48,19 @@ jobs:
             echo "release=true" >> "$GITHUB_OUTPUT"
           fi
 
-  release:
-    name: Release
+  verify:
+    name: Verify
     needs: check
     if: ${{ needs.check.outputs.release == 'true' }}
     runs-on: ubuntu-latest
-    environment: release
-    permissions:
-      contents: write
-    env:
-      TAG: ${{ needs.check.outputs.tag }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 0
+          persist-credentials: false
+          submodules: true
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
           toolchain: stable
           components: rustfmt, clippy
@@ -77,17 +74,60 @@ jobs:
           cargo test --all-features --verbose -- --include-ignored
           cargo publish --dry-run
 
-      - name: Create and push tag
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -a "${TAG}" -m "Release ${TAG}"
-          git push origin "${TAG}"
+  publish:
+    name: Publish to crates.io
+    needs: [check, verify]
+    if: ${{ needs.check.outputs.release == 'true' }}
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          submodules: true
 
-      - name: Publish to crates.io
-        run: cargo publish --token "${CARGO_REGISTRY_TOKEN}"
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      - uses: rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18 # v1.0.5
+        id: auth
+
+      - run: cargo publish
         env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+
+  # Deliberately no checkout: this is the job that holds contents: write, and
+  # gh talks to the API, so nothing from the tree needs to run beside it.
+  release:
+    name: Tag and release
+    needs: [check, publish]
+    if: ${{ needs.check.outputs.release == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ needs.check.outputs.tag }}
+    steps:
+      - name: Create tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags" \
+            -f tag="${TAG}" \
+            -f message="Release ${TAG}" \
+            -f object="${GITHUB_SHA}" \
+            -f type=commit \
+            --jq '.sha')"
+          gh api "repos/${GITHUB_REPOSITORY}/git/refs" \
+            -f ref="refs/tags/${TAG}" \
+            -f sha="${tag_sha}"
 
       - name: Create GitHub Release
         env:

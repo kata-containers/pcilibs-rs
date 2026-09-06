@@ -9,6 +9,7 @@
 //! sysfs trees and belongs nowhere near production code.
 
 use std::fs;
+use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
 
 use tempfile::TempDir;
@@ -75,6 +76,39 @@ impl Fake {
         fs::write(path.join("numa_node"), "0\n").unwrap();
     }
 
+    /// Everything [`crate::PciDev`] reads to open a function: identity,
+    /// config space, a runtime-PM policy that needs no waking, `reset`, and
+    /// a `resource0`.  The BAR0 is sparse, the registers a caller reaches
+    /// for being megabytes apart.
+    pub fn add_mappable_device(
+        &self,
+        address: &str,
+        vendor: u16,
+        device: u16,
+        class: u32,
+        bar0_len: u64,
+    ) {
+        self.add_pci_device(address, vendor, device, class, None);
+
+        let path = self.device(address);
+        fs::File::create(path.join("resource0"))
+            .and_then(|bar0| bar0.set_len(bar0_len))
+            .unwrap();
+        fs::write(path.join("config"), [0u8; 64]).unwrap();
+        fs::write(path.join("reset"), "").unwrap();
+        fs::create_dir(path.join("power")).unwrap();
+        fs::write(path.join("power/control"), "auto\n").unwrap();
+        fs::write(path.join("power/runtime_status"), "active\n").unwrap();
+    }
+
+    pub fn set_register(&self, address: &str, offset: u64, value: u32) {
+        fs::OpenOptions::new()
+            .write(true)
+            .open(self.device(address).join("resource0"))
+            .and_then(|bar0| bar0.write_all_at(&value.to_le_bytes(), offset))
+            .unwrap();
+    }
+
     pub fn add_driver(&self, name: &str) -> PathBuf {
         let path = self.driver(name);
         fs::create_dir_all(&path).unwrap();
@@ -105,6 +139,22 @@ impl Fake {
     pub fn set_iommu_group(&self, address: &str, group: u32) {
         let path = self.add_iommu_group(group);
         std::os::unix::fs::symlink(path, self.device(address).join("iommu_group")).unwrap();
+    }
+
+    pub fn add_infiniband(&self, name: &str, address: &str, node_type: &str, fw_ver: &str) {
+        let path = self.sysfs.infiniband().join(name);
+        fs::create_dir_all(&path).unwrap();
+        std::os::unix::fs::symlink(self.device(address), path.join("device")).unwrap();
+        fs::write(path.join("node_type"), format!("{node_type}\n")).unwrap();
+        fs::write(path.join("fw_ver"), format!("{fw_ver}\n")).unwrap();
+    }
+
+    /// `dev` is the cdev's `<major>:<minor>`, as sysfs prints it.
+    pub fn add_infiniband_verbs(&self, name: &str, ibdev: &str, dev: &str) {
+        let path = self.sysfs.infiniband_verbs().join(name);
+        fs::create_dir_all(&path).unwrap();
+        fs::write(path.join("ibdev"), format!("{ibdev}\n")).unwrap();
+        fs::write(path.join("dev"), format!("{dev}\n")).unwrap();
     }
 
     pub fn driver_override(&self, address: &str) -> String {
