@@ -21,7 +21,7 @@ tempfile = { version = "3.19.1", optional = true }
 
 [build-dependencies]
 nom = { version = "7.1", default-features = false }
-phf_codegen = "0.11"
+phf_codegen = "0.14"
 quote = "1.0"
 proc-macro2 = "1.0"
 
