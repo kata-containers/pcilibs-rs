@@ -20,7 +20,7 @@ phf = { version = "0.11", default-features = false }
 tempfile = { version = "3.19.1", optional = true }
 
 [build-dependencies]
-nom = { version = "7.1", default-features = false }
+nom = { version = "8.0", default-features = false }
 phf_codegen = "0.11"
 quote = "1.0"
 proc-macro2 = "1.0"
