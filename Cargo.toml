@@ -16,7 +16,7 @@ testfs = ["dep:tempfile"]
 
 [dependencies]
 nix = { version = "0.31.3", default-features = false, features = ["fs"] }
-phf = { version = "0.11", default-features = false }
+phf = { version = "0.14", default-features = false }
 tempfile = { version = "3.19.1", optional = true }
 
 [build-dependencies]
