@@ -410,4 +410,31 @@ alias pci:v000010DEd00002330sv*sd*bc*sc*i* nvidia
     fn a_module_that_is_not_loaded_has_no_driver(fake: Fake) {
         assert!(driver_for(&fake.sysfs, "nvgrace_gpu_vfio_pci").is_err());
     }
+
+    /// Refused before the join: a module name becomes a path here too.
+    #[rstest]
+    #[case::traversal("../../../etc")]
+    #[case::absolute("/etc")]
+    #[case::separator("vfio_pci/..")]
+    #[case::empty("")]
+    fn refuses_a_module_name_that_is_not_one(fake: Fake, #[case] module: &str) {
+        let err = driver_for(&fake.sysfs, module).unwrap_err();
+
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput, "{err}");
+    }
+
+    /// Loaded but registering no PCI driver is not the same as not loaded.
+    #[rstest]
+    fn a_module_registering_no_pci_driver_has_none(fake: Fake) {
+        let drivers = fake
+            .sysfs
+            .module("vfio")
+            .expect("a module name")
+            .join("drivers");
+        fs::create_dir_all(drivers.join("vfio_group")).unwrap();
+
+        let err = driver_for(&fake.sysfs, "vfio").unwrap_err();
+
+        assert_eq!(err.kind(), io::ErrorKind::NotFound, "{err}");
+    }
 }

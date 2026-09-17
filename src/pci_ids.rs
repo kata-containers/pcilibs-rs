@@ -314,6 +314,45 @@ mod tests {
         }
     }
 
+    /// The deepest rows `build.rs` generates: dropping them would look just
+    /// like a database that never had them.
+    #[test]
+    fn test_device_subsystems() {
+        let device = Device::from_vid_pid(0x8086, 0x100e).unwrap();
+
+        let qemu = device
+            .subsystems()
+            .find(|subsystem| (subsystem.subvendor(), subsystem.subdevice()) == (0x1af4, 0x1100))
+            .expect("1af4:1100 must be known");
+
+        assert_eq!(qemu.name(), "QEMU Virtual Machine");
+    }
+
+    #[test]
+    fn test_subclass_prog_ifs() {
+        let sata = Subclass::from_cid_sid(0x01, 0x06).unwrap();
+
+        let ahci = sata
+            .prog_ifs()
+            .find(|prog_if| prog_if.id() == 0x01)
+            .expect("AHCI must be known");
+
+        assert_eq!(ahci.name(), "AHCI 1.0");
+    }
+
+    #[test]
+    fn test_vendors_iter() {
+        assert!(Vendors::iter()
+            .any(|vendor| vendor.id() == 0x10de && vendor.name() == "NVIDIA Corporation"));
+    }
+
+    #[test]
+    fn test_classes_iter() {
+        assert!(
+            Classes::iter().any(|class| class.id() == 0x03 && class.name() == "Display controller")
+        );
+    }
+
     #[test]
     fn test_subclass_from_cid_sid() {
         let subclass = Subclass::from_cid_sid(0x07, 0x00).unwrap();

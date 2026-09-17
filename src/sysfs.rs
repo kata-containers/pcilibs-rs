@@ -87,6 +87,16 @@ impl Sysfs {
     pub fn vfio_dev(&self, name: &str) -> PathBuf {
         self.class("vfio-dev").join(name)
     }
+
+    pub fn infiniband(&self) -> PathBuf {
+        self.class("infiniband")
+    }
+
+    /// Only the devices userspace can open verbs on, which is not every
+    /// InfiniBand device: a separate tree, not a subset of one.
+    pub fn infiniband_verbs(&self) -> PathBuf {
+        self.class("infiniband_verbs")
+    }
 }
 
 #[cfg(test)]

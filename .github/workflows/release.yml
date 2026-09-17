@@ -1,9 +1,9 @@
 name: Release
 
 # The version lives in Cargo.toml. Bump it through a normal PR; once it lands
-# on main this workflow reads the version, and if the matching tag does not
-# exist yet it tags, publishes to crates.io, and cuts the GitHub Release, all
-# by itself. Nothing is released while the version is unchanged.
+# on main this workflow reads the version, and if crates.io does not have it
+# yet it tags, cuts the GitHub Release, and publishes, all by itself. Nothing
+# is released while the version is unchanged.
 on:
   push:
     branches: [main]
@@ -18,10 +18,14 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  # crates.io turns away requests that do not identify themselves.
+  CRATES_IO_UA: kata-containers/pcilibs-rs release workflow
 
 jobs:
-  # Read the version from Cargo.toml and decide whether it needs releasing
-  # (i.e. no tag exists for it yet).
+  # Read the version from Cargo.toml and decide whether it needs releasing.
+  # crates.io answers that, not the tag: publishing goes last and is the one
+  # step that cannot be taken twice, so a run that tagged and then failed to
+  # publish has to come back and finish rather than stop at its own tag.
   check:
     name: Check version
     runs-on: ubuntu-latest
@@ -31,39 +35,41 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 0
+          persist-credentials: false
       - name: Decide whether to release
         id: decide
         run: |
-          version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')"
+          metadata="$(cargo metadata --no-deps --format-version 1)"
+          crate="$(jq -r '.packages[0].name' <<<"${metadata}")"
+          version="$(jq -r '.packages[0].version' <<<"${metadata}")"
           tag="v${version}"
           echo "Cargo.toml version: ${version} (tag ${tag})"
-          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
-          if git ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null 2>&1; then
-            echo "Tag ${tag} already exists; nothing to release."
-            echo "release=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "Tag ${tag} does not exist; will release."
-            echo "release=true" >> "$GITHUB_OUTPUT"
-          fi
+          code="$(curl -sSL -o /dev/null -w '%{http_code}' \
+            -H "User-Agent: ${CRATES_IO_UA}" \
+            "https://crates.io/api/v1/crates/${crate}/${version}")"
+          case "${code}" in
+            404) echo "${crate} ${version} is not on crates.io; will release."; release=true ;;
+            200) echo "${crate} ${version} is already there; nothing to release."; release=false ;;
+            *) echo "::error::crates.io answered ${code} for ${crate} ${version}"; exit 1 ;;
+          esac
+          {
+            echo "tag=${tag}"
+            echo "release=${release}"
+          } >> "$GITHUB_OUTPUT"
 
-  release:
-    name: Release
+  verify:
+    name: Verify
     needs: check
     if: ${{ needs.check.outputs.release == 'true' }}
     runs-on: ubuntu-latest
-    environment: release
-    permissions:
-      contents: write
-    env:
-      TAG: ${{ needs.check.outputs.tag }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 0
+          persist-credentials: false
+          submodules: true
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
           toolchain: stable
           components: rustfmt, clippy
@@ -77,23 +83,81 @@ jobs:
           cargo test --all-features --verbose -- --include-ignored
           cargo publish --dry-run
 
-      - name: Create and push tag
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -a "${TAG}" -m "Release ${TAG}"
-          git push origin "${TAG}"
-
-      - name: Publish to crates.io
-        run: cargo publish --token "${CARGO_REGISTRY_TOKEN}"
+  # Deliberately no checkout: this is the job that holds contents: write, and
+  # gh talks to the API, so nothing from the tree needs to run beside it.
+  #
+  # A failed publish comes back through here, so both steps leave what they
+  # already made alone rather than failing on it.
+  release:
+    name: Tag and release
+    needs: [check, verify]
+    if: ${{ needs.check.outputs.release == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ needs.check.outputs.tag }}
+    steps:
+      - name: Create tag
         env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}" >/dev/null 2>&1; then
+            echo "::notice::Tag ${TAG} is already there; leaving it."
+            exit 0
+          fi
+          tag_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags" \
+            -f tag="${TAG}" \
+            -f message="Release ${TAG}" \
+            -f object="${GITHUB_SHA}" \
+            -f type=commit \
+            --jq '.sha')"
+          gh api "repos/${GITHUB_REPOSITORY}/git/refs" \
+            -f ref="refs/tags/${TAG}" \
+            -f sha="${tag_sha}"
 
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          if gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            echo "::notice::Release ${TAG} is already there; leaving it."
+            exit 0
+          fi
           gh release create "${TAG}" \
             --repo "${GITHUB_REPOSITORY}" \
             --title "${TAG}" \
             --generate-notes
+
+  # Last, because it is the only step here that cannot be undone: a crates.io
+  # version is immutable, while a tag and a release can be removed and made
+  # again.  Anything that fails before this leaves nothing published, and the
+  # next run starts over.
+  publish:
+    name: Publish to crates.io
+    needs: [check, verify, release]
+    if: ${{ needs.check.outputs.release == 'true' }}
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          submodules: true
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      - uses: rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18 # v1.0.5
+        id: auth
+
+      - run: cargo publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}

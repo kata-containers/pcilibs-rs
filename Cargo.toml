@@ -7,14 +7,26 @@ authors = ["The Kata Containers community <kata-dev@lists.katacontainers.io>"]
 repository = "https://github.com/kata-containers/pcilibs-rs.git"
 homepage = "https://katacontainers.io/"
 readme = "README.md"
-license = "Apache-2.0"
+# src/cc/ and src/pci_dev.rs are MIT, carrying NVIDIA's copyright: they are a
+# port of gpu-admin-tools. Everything else is Apache-2.0. Per-file SPDX
+# headers say which is which.
+license = "Apache-2.0 AND MIT"
 edition = "2021"
+# The newest thing the source asks for is io::ErrorKind::ResourceBusy.
+rust-version = "1.83"
 
 [features]
 # Fake sysfs and /dev/vfio trees. For dev-dependencies only.
 testfs = ["dep:tempfile"]
+# In-band NVIDIA confidential computing and Protected PCIe. Off by default:
+# a consumer that only enumerates devices should not pull anyhow, and should
+# not have to care that this exists.
+cc = ["dep:anyhow"]
 
 [dependencies]
+anyhow = { version = "1", optional = true }
+# Already in the tree via nix; used directly for the BAR0 mmap.
+libc = "0.2"
 nix = { version = "0.31.3", default-features = false, features = ["fs"] }
 phf = { version = "0.11", default-features = false }
 tempfile = { version = "3.19.1", optional = true }
