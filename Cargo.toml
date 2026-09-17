@@ -28,7 +28,7 @@ anyhow = { version = "1", optional = true }
 # Already in the tree via nix; used directly for the BAR0 mmap.
 libc = "0.2"
 nix = { version = "0.31.3", default-features = false, features = ["fs"] }
-phf = { version = "0.11", default-features = false }
+phf = { version = "0.14", default-features = false }
 tempfile = { version = "3.19.1", optional = true }
 
 [build-dependencies]
