@@ -174,6 +174,8 @@ pub const CHIPS: &[Chip] = &[
     Chip { name: "GB205", devid: (0x2f00, 0x2f7f), hopper: false, boot_complete: 0xad00bc },
     Chip { name: "GB206", devid: (0x2d00, 0x2d7f), hopper: false, boot_complete: 0xad00bc },
     Chip { name: "GB207", devid: (0x2d80, 0x2dff), hopper: false, boot_complete: 0xad00bc },
+    Chip { name: "GR100", devid: (0x3000, 0x30bf), hopper: false, boot_complete: 0xad00bc },
+    Chip { name: "GR102", devid: (0x30c0, 0x30ff), hopper: false, boot_complete: 0xad00bc },
 ];
 
 /// CC is owned by system firmware here, so raising it in band is refused.
@@ -187,6 +189,7 @@ const C2C_DEVIDS: &[u16] = &[
     0x2342, 0x2343, 0x2345, 0x2348, // GH200
     0x2941, 0x297e, 0x29bc, // GB200
     0x31c2, // GB300
+    0x3041, 0x307e, 0x30ff, // Rubin C2C variants
 ];
 
 /// Also the set needing a vfio driver that can map coherent memory. Wider than
@@ -676,6 +679,12 @@ mod tests {
         assert!(!chip_for(0x2901).unwrap().hopper);
         assert_eq!(chip_for(0x2b85).unwrap().name, "GB202");
         assert_eq!(chip_for(0x2b85).unwrap().boot_complete, 0xad00bc);
+        for devid in [0x3000, 0x3021, 0x3040] {
+            assert_eq!(chip_for(devid).unwrap().name, "GR100");
+            assert!(!chip_for(devid).unwrap().hopper);
+        }
+        assert_eq!(chip_for(0x30c0).unwrap().name, "GR102");
+        assert!(!chip_for(0x30c0).unwrap().hopper);
         assert!(chip_for(0x20b0).is_none()); // A100: no CC
     }
 
@@ -685,8 +694,6 @@ mod tests {
         assert_eq!(chip_for(0x2342).unwrap().name, "GH100");
     }
 
-    /// NVIDIA also marks 0x3041, 0x307e and 0x30ff coherent; they are absent
-    /// because `CHIPS` has no row for them, and this is what keeps that honest.
     #[test]
     fn every_c2c_id_is_a_known_chip() {
         for devid in C2C_DEVIDS {
