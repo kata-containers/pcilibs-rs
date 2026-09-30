@@ -37,15 +37,16 @@ jobs:
     name: actionlint
     needs: changes
     if: ${{ needs.changes.outputs.workflows == 'true' }}
-    env:
-      GH_TOKEN: ${{ github.token }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout the code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Install actionlint gh extension
-        run: gh extension install https://github.com/cschleiden/gh-actionlint
+      # The gh extension bundles a linter that predates hosted ARM runners.
+      - name: Install actionlint
+        run: go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+        env:
+          GOBIN: ${{ runner.temp }}/actionlint
       - name: Run actionlint
-        run: gh actionlint
+        run: '"${RUNNER_TEMP}/actionlint/actionlint"'
