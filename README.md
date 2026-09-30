@@ -32,15 +32,16 @@ pcilibs-rs = { git = "...", default-features = false, features = ["std"] }
 
 ### Accelerator platform detection
 
-`nvlink::discover_platform(&sysfs)` returns the PCI topology and its platform
-classification. A ServiceVM can select the H100/H200-style driver/FM path from
+`platform::discover(&sysfs)` returns the PCI topology and its platform
+classification. PCIe-only GPUs report `Pcie(Family)` with no fabric; neither
+NVSwitch devices nor RDMA drivers are required. A ServiceVM can select the H100/H200-style driver/FM path from
 `FabricInterface::DirectNvSwitch`, or the Bx00/Rx00-style RDMA/NVLSM/FM path from
 `FabricInterface::ConnectX`, even without GPUs or four visible management PFs.
 
 When GPUs are visible, NVIDIA device and subsystem-device IDs distinguish SXM,
 PCIe and coherent attachment. The pure `platform::classify` function combines
 that evidence with the management interface to report `HgxHx00`, `HgxBx00`,
-`HgxRx00`, or `Coherent(Family)`. Mixed and unknown evidence remain explicit.
+`HgxRx00`, `Pcie(Family)`, or `Coherent(Family)`. Mixed and unknown evidence remain explicit.
 The attachment facts come from NVIDIA
 [gpu-admin-tools v2026.09.29](https://github.com/NVIDIA/gpu-admin-tools/blob/44f261a7ebff96559488230b420e4a3035b30d58/gpu/devid_properties.py).
 
@@ -100,9 +101,9 @@ fn inspect_hardware() -> std::io::Result<()> {
 }
 ```
 
-For NVRC, `discover()` replaces PCI scans in `mode.rs`,
-`discover_gpus()` supplies the GPU count used by `modprobe.rs`, and
-`discover_management_ports()` supplies the GUID selection in `infiniband.rs`.
+For NVRC, `platform::discover()` supplies mode selection,
+`platform::discover_topology()` supplies GPU/fabric presence for driver options,
+and `nvlink::discover_management_ports()` supplies fabric startup with its GUID.
 NVRC retains its mode policy and daemon/module startup. No external discovery
 commands or new dependencies are required.
 

@@ -6,11 +6,17 @@
 //! PCI evidence cannot establish an exact chassis model or NVL72 rack membership.
 //! The classifier uses neither an allocator nor firmware/driver access.
 
+#[cfg(feature = "std")]
+pub(crate) mod linux;
+#[cfg(feature = "std")]
+pub use linux::{discover, discover_gpus, discover_topology, DetectedPlatform, Topology};
+
 use crate::gpu::{self, Attachment, Family};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     Unknown,
+    Pcie(Family),
     HgxHx00,
     HgxBx00,
     HgxRx00,
@@ -82,6 +88,7 @@ pub fn classify(gpus: impl IntoIterator<Item = GpuIdentity>, fabric: FabricInter
     } else {
         match (first, fabric) {
             (Some((family, Attachment::Coherent)), _) => Kind::Coherent(family),
+            (Some((family, Attachment::Pcie)), _) => Kind::Pcie(family),
             (Some((Family::Hopper, Attachment::Sxm)), FabricInterface::DirectNvSwitch) => {
                 Kind::HgxHx00
             }
@@ -170,12 +177,8 @@ mod tests {
     }
 
     #[test]
-    fn unknown_and_pcie_parts_do_not_prove_an_hgx_platform() {
-        for identities in [
-            [gpu(0xffff, 0xffff)],
-            [gpu(0x2901, 0xffff)],
-            [gpu(0x2331, 0x1626)],
-        ] {
+    fn unknown_parts_do_not_prove_an_hgx_platform() {
+        for identities in [[gpu(0xffff, 0xffff)], [gpu(0x2901, 0xffff)]] {
             assert_eq!(
                 classify(identities, FabricInterface::DirectNvSwitch).kind,
                 Kind::Unknown
@@ -197,6 +200,24 @@ mod tests {
                 classify(identities, FabricInterface::ConnectX).kind,
                 Kind::Unknown
             );
+        }
+    }
+
+    #[test]
+    fn pcie_attachment_does_not_imply_a_switched_fabric() {
+        for (identity, family) in [
+            (gpu(0x2331, 0x1626), Family::Hopper),
+            (gpu(0x2924, 0x18b6), Family::Blackwell),
+        ] {
+            for fabric in [
+                FabricInterface::None,
+                FabricInterface::DirectNvSwitch,
+                FabricInterface::ConnectX,
+            ] {
+                let platform = classify([identity], fabric);
+                assert_eq!(platform.kind, Kind::Pcie(family));
+                assert_eq!(platform.fabric, fabric);
+            }
         }
     }
 
