@@ -58,10 +58,14 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
   verify:
-    name: Verify
+    name: Verify (${{ matrix.runner }})
     needs: check
     if: ${{ needs.check.outputs.release == 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

@@ -48,10 +48,14 @@ jobs:
 
   # Run unit and integration tests.
   test:
-    name: cargo test
+    name: cargo test (${{ matrix.runner }})
     needs: changes
     if: ${{ needs.changes.outputs.code == 'true' || github.event_name == 'schedule' }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -65,13 +69,18 @@ jobs:
       - run: cargo test --all-features --verbose -- --include-ignored
 
   no-std:
-    name: no_std classification (${{ matrix.target }})
+    name: no_std classification (${{ matrix.runner }})
     needs: changes
     if: ${{ needs.changes.outputs.code == 'true' || github.event_name == 'schedule' }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
     strategy:
+      fail-fast: false
       matrix:
-        target: [aarch64-unknown-none, x86_64-unknown-none]
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-none
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-none
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -86,10 +95,14 @@ jobs:
   # Per file as well as over the tree: a total alone lets a well-covered
   # file hide an untested one.
   coverage:
-    name: cargo llvm-cov
+    name: cargo llvm-cov (${{ matrix.runner }})
     needs: changes
     if: ${{ needs.changes.outputs.code == 'true' || github.event_name == 'schedule' }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -109,10 +122,14 @@ jobs:
 
   # Check code formatting against Rust style guidelines.
   formatting:
-    name: cargo fmt
+    name: cargo fmt (${{ matrix.runner }})
     needs: changes
     if: ${{ needs.changes.outputs.code == 'true' || github.event_name == 'schedule' }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -127,10 +144,14 @@ jobs:
 
   # Lint for common mistakes and style issues.
   linting:
-    name: cargo clippy
+    name: cargo clippy (${{ matrix.runner }})
     needs: changes
     if: ${{ needs.changes.outputs.code == 'true' || github.event_name == 'schedule' }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -146,10 +167,14 @@ jobs:
 
   # Ensure the public API documentation builds cleanly.
   docs:
-    name: cargo doc
+    name: cargo doc (${{ matrix.runner }})
     needs: changes
     if: ${{ needs.changes.outputs.code == 'true' || github.event_name == 'schedule' }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -166,10 +191,14 @@ jobs:
 
   # Check dependencies for known security vulnerabilities.
   security:
-    name: cargo audit
+    name: cargo audit (${{ matrix.runner }})
     needs: changes
     if: ${{ needs.changes.outputs.code == 'true' || github.event_name == 'schedule' }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -186,10 +215,14 @@ jobs:
 
   # Verify licenses, check for banned dependencies, and audit sources.
   deny:
-    name: cargo deny
+    name: cargo deny (${{ matrix.runner }})
     needs: changes
     if: ${{ needs.changes.outputs.code == 'true' || github.event_name == 'schedule' }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -206,10 +239,14 @@ jobs:
 
   # Detect unused dependencies in Cargo.toml.
   unused-deps:
-    name: cargo udeps
+    name: cargo udeps (${{ matrix.runner }})
     needs: changes
     if: ${{ needs.changes.outputs.code == 'true' || github.event_name == 'schedule' }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
