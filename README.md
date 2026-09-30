@@ -58,7 +58,65 @@ still needs hardware validation.
 
 `cargo run --example platform` performs read-only discovery; VPD may require
 root. GPU identities are shared with `cc` so classification needs no BAR access.
-The existing conservative `cc::is_c2c` VFIO selection behavior is unchanged.
+The device-only `cc::is_c2c` compatibility API remains conservative for aliased
+IDs. VFIO driver selection uses kernel aliases independently of this property.
+
+### GPU device-ID extensions
+
+New variants of supported chips should not require rebuilding every consumer.
+`gpu::catalog::Catalog` extends the bundled
+[`data/nvidia-gpus.catalog`](data/nvidia-gpus.catalog) with caller-supplied records.
+Parsing and lookup are allocation-free and available with `default-features = false`.
+Linux callers can load a bounded file with `gpu::catalog::CatalogFile::read`.
+Neither path downloads data or changes a process-global catalog.
+
+The format has a version and a caller-assigned revision, followed by device ID,
+subsystem device ID, existing chip profile, and attachment. For example, this
+**already bundled** identity illustrates the format:
+
+```text
+pcilibs-nvidia-gpus 1 deployment-2026-09-30
+3041 221a GR100 coherent
+```
+
+An extension normally contains only new mappings verified against NVIDIA's
+`gpu-admin-tools` or hardware documentation. IDs are hexadecimal and records must
+be sorted numerically by device/subsystem ID. Subsystem `*` is permitted only as
+an explicit assertion that the mapping applies to every variant; it cannot
+overlap exact records in the extension or contradict a built-in variant.
+The vendor is implicitly NVIDIA (`10de`); this is a GPU catalog, not a general
+PCI or VFIO driver database.
+
+Unlisted identities keep their built-in mappings. Conflicts with built-in
+identities or chip ranges, duplicate/overlapping extension records, unknown chip
+profiles, malformed fields, and unsupported format versions are errors. Identical
+built-in records are accepted so an extension survives a library update that
+incorporates those IDs. Files are limited to 64 KiB and 1,024 extension records.
+A missing or invalid requested file is an error, never an implicit fallback.
+
+```rust,no_run
+use pcilibs_rs::{gpu::catalog::CatalogFile, platform, Sysfs};
+
+let extension = CatalogFile::read(std::path::Path::new("/etc/pcilibs/gpus.catalog"))?;
+let catalog = extension.catalog();
+let detected = platform::discover_with_catalog(&Sysfs::default(), catalog)?;
+println!("extension={} platform={:?}", catalog.revision(), detected.platform);
+# Ok::<(), std::io::Error>(())
+```
+
+Pure callers use `platform::classify_with_catalog`; CC consumers use
+`cc::Gpu::open_in_with_catalog` to apply the same exact mapping before BAR access.
+Existing discovery/opening APIs continue using built-in knowledge. Keep the
+loaded file alive for its borrowed catalog; replace it explicitly between runs
+and record both the built-in and extension revisions. The example accepts an
+optional extension path: `cargo run --example platform -- /path/to/gpus.catalog`.
+
+Catalogs are trusted hardware configuration: an incorrect new mapping can select
+the wrong existing register profile. They cannot supply registers, firmware
+commands, or arbitrary driver names. Coherent attachment and in-band CC capability
+remain independent; new chip protocols still require code, and VFIO support still
+requires a device-specific kernel alias. Deploying extensions into NVRC or the
+provisioner is a separate consumer change.
 
 ### `cc` — in-band NVIDIA confidential computing
 
@@ -152,7 +210,7 @@ under NVIDIA's copyright:
 
 | Path | License |
 | --- | --- |
-| `src/cc/`, `src/gpu.rs` | MIT — a Rust port of the CC subset of NVIDIA's [`gpu-admin-tools`](https://github.com/NVIDIA/gpu-admin-tools) |
+| `src/cc/`, `src/gpu.rs`, `data/nvidia-gpus.catalog` | MIT — a Rust port of the CC subset of NVIDIA's [`gpu-admin-tools`](https://github.com/NVIDIA/gpu-admin-tools) |
 | `src/pci_dev.rs` | MIT — the generic PCI register access the port needed, which this crate did not have |
 | everything else | Apache-2.0 |
 

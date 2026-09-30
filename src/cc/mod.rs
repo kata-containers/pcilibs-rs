@@ -224,6 +224,48 @@ impl Gpu {
             )
         })?;
         let c2c = is_c2c(pci.device);
+        Self::finish_open(pci, chip, c2c)
+    }
+
+    /// Catalog identities must be validated before BAR access or a runtime-PM wake-up.
+    /// New IDs may reuse existing register profiles; new protocols still need code.
+    pub fn open_in_with_catalog(
+        sysfs: &Sysfs,
+        bdf: &str,
+        catalog: crate::gpu::catalog::Catalog<'_>,
+    ) -> Result<Self> {
+        let path = sysfs.device(bdf).context("invalid PCI address")?;
+        ensure!(
+            attr_hex(&path, "vendor")? == 0x10de,
+            "{bdf}: vendor is not NVIDIA"
+        );
+        ensure!(
+            matches!(attr_hex(&path, "class")? >> 8, 0x0300 | 0x0302),
+            "{bdf}: PCI function is not a GPU"
+        );
+        let device =
+            u16::try_from(attr_hex(&path, "device")?).context("device ID exceeds 16 bits")?;
+        let subsystem = u16::try_from(attr_hex(&path, "subsystem_device")?)
+            .context("subsystem device ID exceeds 16 bits")?;
+        let properties = catalog.lookup(device, subsystem).with_context(|| {
+            format!(
+                "{bdf}: {device:04x}:{subsystem:04x} is absent from GPU catalog {}",
+                catalog.revision()
+            )
+        })?;
+        let pci = PciDev::open_in(sysfs, bdf)?;
+        ensure!(
+            pci.vendor == 0x10de && pci.device == device,
+            "{bdf}: PCI identity changed while opening GPU"
+        );
+        Self::finish_open(
+            pci,
+            properties.chip,
+            properties.attachment == crate::gpu::Attachment::Coherent,
+        )
+    }
+
+    fn finish_open(pci: PciDev, chip: &'static Chip, c2c: bool) -> Result<Self> {
         let gpu = Self { pci, chip, c2c };
 
         gpu.wait_for_bar0()?;
@@ -826,6 +868,79 @@ mod tests {
         assert_eq!(gpu.chip.name, "GH100");
         assert_eq!((gpu.bdf(), gpu.devid()), (BDF, GH100));
         assert!(!gpu.c2c);
+    }
+
+    #[rstest]
+    #[case::coherent_rubin(
+        "pcilibs-nvidia-gpus 1 test\nffff 1234 GR100 coherent",
+        "GR100",
+        true,
+        true
+    )]
+    #[case::coherent_hopper(
+        "pcilibs-nvidia-gpus 1 test\nffff 1234 GH100 coherent",
+        "GH100",
+        true,
+        false
+    )]
+    #[case::sxm_blackwell(
+        "pcilibs-nvidia-gpus 1 test\nffff 1234 GB100 sxm",
+        "GB100",
+        false,
+        false
+    )]
+    fn catalog_open_uses_the_verified_profile_and_attachment(
+        fake: Fake,
+        #[case] text: &str,
+        #[case] name: &str,
+        #[case] coherent: bool,
+        #[case] coherent_cc: bool,
+    ) {
+        fake.add_mappable_device(BDF, 0x10de, 0xffff, GPU_CLASS, BAR0_LEN);
+        std::fs::write(fake.device(BDF).join("subsystem_device"), "0x1234").unwrap();
+        let catalog = crate::gpu::catalog::Catalog::parse(text).unwrap();
+        let gpu = Gpu::open_in_with_catalog(&fake.sysfs, BDF, catalog).unwrap();
+        assert_eq!(gpu.chip.name, name);
+        assert_eq!(gpu.c2c, coherent);
+        assert_eq!(gpu.chip.c2c_cc_supported, coherent_cc);
+    }
+
+    #[rstest]
+    #[case::wrong_vendor(0x8086, GPU_CLASS, "0x1234", "not NVIDIA")]
+    #[case::wrong_class(0x10de, NVSWITCH_CLASS, "0x1234", "not a GPU")]
+    #[case::unmapped_subsystem(0x10de, GPU_CLASS, "0x1235", "absent from GPU catalog test")]
+    #[case::invalid_subsystem(0x10de, GPU_CLASS, "0x10000", "exceeds 16 bits")]
+    fn catalog_refuses_unknown_hardware_before_bar_access(
+        fake: Fake,
+        #[case] vendor: u16,
+        #[case] class: u32,
+        #[case] subsystem: &str,
+        #[case] expected: &str,
+    ) {
+        fake.add_pci_device(BDF, vendor, 0xffff, class, None);
+        std::fs::write(fake.device(BDF).join("subsystem_device"), subsystem).unwrap();
+        let catalog = crate::gpu::catalog::Catalog::parse(
+            "pcilibs-nvidia-gpus 1 test\nffff 1234 GR100 coherent",
+        )
+        .unwrap();
+        let error = why(Gpu::open_in_with_catalog(&fake.sysfs, BDF, catalog));
+        assert!(error.contains(expected), "{error}");
+        assert!(!fake.device(BDF).join("resource0").exists());
+    }
+
+    #[rstest]
+    fn catalog_open_preserves_builtin_subsystem_distinctions(fake: Fake) {
+        fake.add_mappable_device(BDF, 0x10de, 0x29bc, GPU_CLASS, BAR0_LEN);
+        let catalog = crate::gpu::catalog::Catalog::parse(
+            "pcilibs-nvidia-gpus 1 test\nffff * GR100 coherent",
+        )
+        .unwrap();
+        for (subsystem, coherent) in [("0x1985", false), ("0x2045", true)] {
+            std::fs::write(fake.device(BDF).join("subsystem_device"), subsystem).unwrap();
+            let gpu = Gpu::open_in_with_catalog(&fake.sysfs, BDF, catalog).unwrap();
+            assert_eq!(gpu.c2c, coherent);
+            assert_eq!(gpu.chip.name, "GB102");
+        }
     }
 
     #[rstest]

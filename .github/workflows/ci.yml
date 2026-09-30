@@ -40,6 +40,7 @@ jobs:
           filters: |
             code:
               - '**/*.rs'
+              - 'data/**'
               - '**/*.toml'
               - '**/*.lock'
               - 'Cargo.lock'

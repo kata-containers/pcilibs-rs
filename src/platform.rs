@@ -9,9 +9,11 @@
 #[cfg(feature = "std")]
 pub(crate) mod linux;
 #[cfg(feature = "std")]
-pub use linux::{discover, discover_gpus, discover_topology, DetectedPlatform, Topology};
+pub use linux::{
+    discover, discover_gpus, discover_topology, discover_with_catalog, DetectedPlatform, Topology,
+};
 
-use crate::gpu::{self, Attachment, Family};
+use crate::gpu::{catalog::Catalog, Attachment, Family};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
@@ -60,22 +62,25 @@ pub struct Platform {
 /// A missing/unknown GPU identity cannot prove Bx00 versus Rx00 in a ServiceVM.
 /// Partial assignments need no fixed GPU or management-PF count.
 pub fn classify(gpus: impl IntoIterator<Item = GpuIdentity>, fabric: FabricInterface) -> Platform {
+    classify_with_catalog(gpus, fabric, Catalog::builtin())
+}
+
+pub fn classify_with_catalog(
+    gpus: impl IntoIterator<Item = GpuIdentity>,
+    fabric: FabricInterface,
+    catalog: Catalog<'_>,
+) -> Platform {
     let mut first = None;
     let mut unknown = false;
     let mut mixed = false;
     let mut gpu_count = 0;
     for gpu in gpus {
         gpu_count += 1;
-        let Some(chip) = gpu::chip_for(gpu.device) else {
+        let Some(properties) = catalog.lookup(gpu.device, gpu.subsystem_device) else {
             unknown = true;
             continue;
         };
-        let attachment = gpu::attachment(gpu.device, gpu.subsystem_device);
-        if attachment == Attachment::Unknown {
-            unknown = true;
-            continue;
-        }
-        let identity = (chip.family, attachment);
+        let identity = (properties.chip.family, properties.attachment);
         match first {
             None => first = Some(identity),
             Some(previous) => mixed |= previous != identity,
@@ -277,6 +282,32 @@ mod tests {
         assert_eq!(
             FabricInterface::from_presence(true, true),
             FabricInterface::Mixed
+        );
+    }
+
+    #[test]
+    fn extension_classifies_new_devices_and_keeps_builtins() {
+        let catalog = Catalog::parse("pcilibs-nvidia-gpus 1 test\nffff * GR100 sxm\n").unwrap();
+        assert_eq!(
+            classify_with_catalog([gpu(0xffff, 0)], FabricInterface::ConnectX, catalog).kind,
+            Kind::HgxRx00
+        );
+        assert_eq!(
+            classify([gpu(0xffff, 0)], FabricInterface::ConnectX).kind,
+            Kind::Unknown
+        );
+        assert_eq!(
+            classify_with_catalog(
+                [gpu(0x2330, 0x16c0)],
+                FabricInterface::DirectNvSwitch,
+                catalog
+            )
+            .kind,
+            Kind::HgxHx00
+        );
+        assert_eq!(
+            classify_with_catalog([gpu(0xfffe, 0)], FabricInterface::ConnectX, catalog).kind,
+            Kind::Unknown
         );
     }
 }

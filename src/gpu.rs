@@ -21,6 +21,8 @@
 
 //! PCI identity must be usable before firmware or driver access.
 
+pub mod catalog;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Family {
     Hopper,
@@ -76,21 +78,10 @@ pub const CHIPS: &[Chip] = &[
     Chip { family: Family::Rubin, name: "GR102", devid: (0x3080, 0x30ff), hopper: false, c2c_cc_supported: true, boot_complete: 0xad00bc },
 ];
 
-/// Keep the existing conservative CC/VFIO check independent of exact attachment.
-/// Device-only matching over-matches some 0x29bc/0x31c2 variants; narrowing that
-/// policy belongs in a separate change. Coherent Rubin still allows in-band CC.
-const C2C_DEVIDS: &[u16] = &[
-    0x2342, 0x2343, 0x2345, 0x2348, // GH200
-    0x2941, 0x297e, 0x29bc, // GB200
-    0x31c2, // GB300
-    0x3041, 0x307e, 0x30ff, // Rubin C2C variants
-];
-
-/// Also the set needing a vfio driver that can map coherent memory. Wider than
-/// that driver's own table: a part can be coherently attached before any
-/// released kernel claims it.
+/// Conservative compatibility API for callers without subsystem identity.
+/// Use a catalog lookup when the exact attachment is needed.
 pub fn is_c2c(devid: u16) -> bool {
-    C2C_DEVIDS.contains(&devid)
+    catalog::Catalog::builtin().may_be_coherent(devid)
 }
 
 pub fn chip_for(devid: u16) -> Option<&'static Chip> {
@@ -101,94 +92,12 @@ pub fn chip_for(devid: u16) -> Option<&'static Chip> {
 
 /// Device IDs alone alias PCIe, SXM and coherent variants on some chips.
 /// NVIDIA gpu-admin-tools v2026.09.29, gpu/devid_properties.py (44f261a7).
-/// This precise classification does not narrow the conservative VFIO `is_c2c` set.
+/// Device-only callers can use the conservative `is_c2c` compatibility API.
 pub fn attachment(device: u16, subsystem_device: u16) -> Attachment {
-    ATTACHMENTS
-        .iter()
-        .find(|(id, _)| *id == (device, subsystem_device))
-        .map_or(Attachment::Unknown, |(_, attachment)| *attachment)
+    catalog::Catalog::builtin()
+        .lookup(device, subsystem_device)
+        .map_or(Attachment::Unknown, |properties| properties.attachment)
 }
-
-const ATTACHMENTS: &[((u16, u16), Attachment)] = &[
-    ((0x2321, 0x1839), Attachment::Pcie),
-    ((0x2322, 0x17a4), Attachment::Pcie),
-    ((0x2324, 0x17a6), Attachment::Sxm),
-    ((0x2324, 0x17a8), Attachment::Sxm),
-    ((0x2328, 0x1905), Attachment::Sxm),
-    ((0x2328, 0x1906), Attachment::Sxm),
-    ((0x2329, 0x198b), Attachment::Sxm),
-    ((0x2329, 0x198c), Attachment::Sxm),
-    ((0x232c, 0x2063), Attachment::Sxm),
-    ((0x232c, 0x2064), Attachment::Sxm),
-    ((0x2330, 0x16c0), Attachment::Sxm),
-    ((0x2330, 0x16c1), Attachment::Sxm),
-    ((0x2330, 0x2044), Attachment::Sxm),
-    ((0x2330, 0x20c1), Attachment::Sxm),
-    ((0x2331, 0x1626), Attachment::Pcie),
-    ((0x2335, 0x18be), Attachment::Sxm),
-    ((0x2335, 0x18bf), Attachment::Sxm),
-    ((0x2336, 0x16c2), Attachment::Sxm),
-    ((0x2336, 0x16c7), Attachment::Sxm),
-    ((0x2337, 0x16e5), Attachment::Sxm),
-    ((0x2337, 0x16ef), Attachment::Sxm),
-    ((0x2338, 0x16f6), Attachment::Sxm),
-    ((0x2338, 0x16f7), Attachment::Sxm),
-    ((0x2339, 0x17d9), Attachment::Sxm),
-    ((0x2339, 0x17fc), Attachment::Sxm),
-    ((0x233a, 0x183a), Attachment::Pcie),
-    ((0x233b, 0x1996), Attachment::Pcie),
-    ((0x233d, 0x1626), Attachment::Pcie),
-    ((0x2342, 0x16eb), Attachment::Coherent),
-    ((0x2342, 0x16ec), Attachment::Coherent),
-    ((0x2342, 0x16ed), Attachment::Coherent),
-    ((0x2342, 0x1805), Attachment::Coherent),
-    ((0x2342, 0x1809), Attachment::Coherent),
-    ((0x2342, 0x1935), Attachment::Coherent),
-    ((0x2342, 0x1937), Attachment::Coherent),
-    ((0x2343, 0x16ec), Attachment::Coherent),
-    ((0x2345, 0x16ed), Attachment::Coherent),
-    ((0x2348, 0x18d2), Attachment::Coherent),
-    ((0x2901, 0x1999), Attachment::Sxm),
-    ((0x2901, 0x199b), Attachment::Sxm),
-    ((0x2901, 0x199d), Attachment::Sxm),
-    ((0x2901, 0x20da), Attachment::Sxm),
-    ((0x2920, 0x197f), Attachment::Sxm),
-    ((0x2920, 0x20de), Attachment::Sxm),
-    ((0x2924, 0x18b6), Attachment::Pcie),
-    ((0x2924, 0x20d4), Attachment::Pcie),
-    ((0x2925, 0x18b7), Attachment::Pcie),
-    ((0x293d, 0x18b6), Attachment::Pcie),
-    ((0x293d, 0x197f), Attachment::Sxm),
-    ((0x293d, 0x1999), Attachment::Sxm),
-    ((0x2941, 0x0000), Attachment::Coherent),
-    ((0x2941, 0x2045), Attachment::Coherent),
-    ((0x2941, 0x2046), Attachment::Coherent),
-    ((0x2941, 0x20ca), Attachment::Coherent),
-    ((0x297e, 0x2046), Attachment::Coherent),
-    ((0x29bc, 0x1985), Attachment::Sxm),
-    ((0x29bc, 0x1997), Attachment::Pcie),
-    ((0x29bc, 0x1998), Attachment::Pcie),
-    ((0x29bc, 0x2045), Attachment::Coherent),
-    ((0x29f1, 0x20dc), Attachment::Sxm),
-    ((0x3002, 0x2277), Attachment::Sxm),
-    ((0x3041, 0x221a), Attachment::Coherent),
-    ((0x307e, 0x221a), Attachment::Coherent),
-    ((0x30ff, 0x221b), Attachment::Coherent),
-    ((0x30ff, 0x221c), Attachment::Coherent),
-    ((0x3182, 0x20e5), Attachment::Sxm),
-    ((0x3182, 0x20e6), Attachment::Sxm),
-    ((0x3182, 0x220c), Attachment::Sxm),
-    ((0x3183, 0x22f2), Attachment::Sxm),
-    ((0x3184, 0x22f3), Attachment::Sxm),
-    ((0x31a1, 0x2274), Attachment::Coherent),
-    ((0x31c2, 0x20e5), Attachment::Sxm),
-    ((0x31c2, 0x20e6), Attachment::Sxm),
-    ((0x31c2, 0x21f1), Attachment::Coherent),
-    ((0x31c3, 0x23ab), Attachment::Coherent),
-    ((0x31fe, 0x20e5), Attachment::Sxm),
-    ((0x3224, 0x215f), Attachment::Sxm),
-    ((0x323e, 0x215f), Attachment::Sxm),
-];
 
 #[cfg(test)]
 mod tests {
@@ -196,15 +105,8 @@ mod tests {
 
     #[test]
     fn c2c_blocks_enable_only() {
-        assert!(C2C_DEVIDS.contains(&0x2342)); // GH200
+        assert!(is_c2c(0x2342)); // GH200
         assert_eq!(chip_for(0x2342).unwrap().name, "GH100");
-    }
-
-    #[test]
-    fn every_c2c_id_is_a_known_chip() {
-        for devid in C2C_DEVIDS {
-            assert!(chip_for(*devid).is_some(), "{devid:#06x} has no chip row");
-        }
     }
 
     #[test]
@@ -213,10 +115,6 @@ mod tests {
         assert_eq!(attachment(0x29bc, 0x2045), Attachment::Coherent);
         assert_eq!(attachment(0x29bc, 0x1997), Attachment::Pcie);
         assert_eq!(attachment(0x29bc, 0xffff), Attachment::Unknown);
-        for ((device, ssid), kind) in ATTACHMENTS {
-            assert_eq!(attachment(*device, *ssid), *kind);
-            assert!(chip_for(*device).is_some());
-        }
     }
 
     #[test]

@@ -36,6 +36,13 @@ pub struct DetectedPlatform {
 
 /// Keep family evidence beside the management interface when GPUs are absent.
 pub fn discover(sysfs: &Sysfs) -> io::Result<DetectedPlatform> {
+    discover_with_catalog(sysfs, crate::gpu::catalog::Catalog::builtin())
+}
+
+pub fn discover_with_catalog(
+    sysfs: &Sysfs,
+    catalog: crate::gpu::catalog::Catalog<'_>,
+) -> io::Result<DetectedPlatform> {
     let topology = discover_topology(sysfs)?;
     let gpus = topology
         .gpus
@@ -56,7 +63,8 @@ pub fn discover(sysfs: &Sysfs) -> io::Result<DetectedPlatform> {
             })
         })
         .collect::<io::Result<Vec<_>>>()?;
-    let platform = crate::platform::classify(gpus, topology.fabric_interface());
+    let platform =
+        crate::platform::classify_with_catalog(gpus, topology.fabric_interface(), catalog);
     Ok(DetectedPlatform { topology, platform })
 }
 
@@ -219,5 +227,35 @@ mod tests {
             crate::platform::FabricInterface::None
         );
         assert_eq!(detected.platform.kind, crate::platform::Kind::Unknown);
+    }
+    #[test]
+    fn loaded_extensions_reach_sysfs_discovery_without_changing_defaults() {
+        let fake = testfs::fake();
+        mlx(&fake, "0000:05:00.0", true);
+        let bdf = "0000:40:00.0";
+        fake.add_pci_device(bdf, 0x10de, 0xffff, 0x030200, None);
+        fs::write(fake.device(bdf).join("subsystem_device"), "0x1234").unwrap();
+        let path = fake.root().join("gpus.catalog");
+        fs::write(&path, "pcilibs-nvidia-gpus 1 test\nffff 1234 GR100 sxm\n").unwrap();
+        let file = crate::gpu::catalog::CatalogFile::read(&path).unwrap();
+        assert_eq!(
+            discover_with_catalog(&fake.sysfs, file.catalog())
+                .unwrap()
+                .platform
+                .kind,
+            crate::platform::Kind::HgxRx00
+        );
+        assert_eq!(
+            discover(&fake.sysfs).unwrap().platform.kind,
+            crate::platform::Kind::Unknown
+        );
+        fs::write(fake.device(bdf).join("subsystem_device"), "0x1235").unwrap();
+        assert_eq!(
+            discover_with_catalog(&fake.sysfs, file.catalog())
+                .unwrap()
+                .platform
+                .kind,
+            crate::platform::Kind::Unknown
+        );
     }
 }
