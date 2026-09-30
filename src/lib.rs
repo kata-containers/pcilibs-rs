@@ -6,7 +6,6 @@
 #[cfg(feature = "cc")]
 pub mod cc;
 mod iommufd;
-pub mod nvlink;
 mod pci_dev;
 mod pci_ids;
 mod pci_manager;

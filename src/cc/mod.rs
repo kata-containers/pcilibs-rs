@@ -473,10 +473,26 @@ pub fn switch_for(boot0: u32) -> Option<&'static Switch> {
     SWITCHES.iter().find(|s| s.boot0 == boot0)
 }
 
+const PCI_CLASS_BRIDGE_OTHER: u32 = 0x0680;
+
 /// PCI addresses of all NVIDIA NVSwitches on the node, sorted.  Generation
 /// is only knowable from BAR0, so [`NvSwitch::open`] does that check.
 pub fn discover_switches(sysfs: &Sysfs) -> Result<Vec<String>> {
-    crate::nvlink::discover_switches(sysfs).context("discover NVSwitch PCI functions")
+    let mut bdfs = Vec::new();
+    for entry in std::fs::read_dir(sysfs.devices()).context("read sysfs PCI tree")? {
+        let entry = entry?;
+        let Some(bdf) = entry.file_name().to_str().and_then(normalize_bdf) else {
+            continue;
+        };
+        let dir = sysfs.devices().join(&bdf);
+        let vendor = attr_hex(&dir, "vendor").unwrap_or(0);
+        let class = attr_hex(&dir, "class").unwrap_or(0);
+        if vendor == 0x10de && class >> 8 == PCI_CLASS_BRIDGE_OTHER {
+            bdfs.push(bdf);
+        }
+    }
+    bdfs.sort();
+    Ok(bdfs)
 }
 
 /// One NVSwitch.  PPCIE is the only mode it carries; there is no

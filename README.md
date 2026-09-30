@@ -30,59 +30,6 @@ has to be present — which is what lets a mode be set on a GPU that is already
 bound to `vfio-pci`. Enabling the feature adds `anyhow`; a consumer that only
 enumerates devices pulls neither it nor this code.
 
-### NVLink discovery for init processes
-
-`pcilibs_rs::nvlink` is available without the `cc` feature. It reads PCI
-identity and VPD before GPU/RDMA drivers are loaded, so an init process can
-choose which drivers and services to start:
-
-```rust,no_run
-use pcilibs_rs::{nvlink, Sysfs};
-
-fn inspect_hardware() -> std::io::Result<()> {
-    let sysfs = Sysfs::default();
-    let topology = nvlink::discover(&sysfs)?;
-    println!("GPUs: {:?}", topology.gpus);
-    println!("Direct NVSwitches: {:?}", topology.switches);
-    println!("Management PFs: {:?}", topology.management_functions);
-
-    // Port GUIDs exist only after RDMA drivers register their devices.
-    let ports = nvlink::discover_management_ports(&sysfs)?;
-    if let Some(port) = ports.first() {
-        let guid = format!("0x{:016x}", port.guid);
-        println!("{} port {}: {guid}", port.ib_device, port.port);
-    }
-    Ok(())
-}
-```
-
-For NVRC, `discover()` replaces PCI scans in `mode.rs`,
-`discover_gpus()` supplies the GPU count used by `modprobe.rs`, and
-`discover_management_ports()` supplies the GUID selection in `infiniband.rs`.
-NVRC retains its mode policy and daemon/module startup. No external discovery
-commands or new dependencies are required.
-
-H100/H200 switches are NVIDIA Other Bridge PCI functions. B200/B300 management
-ConnectX PFs are identified by the exact `SMDL=SW_MNG` field in PCI VPD, then
-associated with present Mellanox PFs sharing the same domain/bus/device.
-VFs are excluded. Count the returned functions as PFs, not physical switches:
-only some PFs carry the marker, and firmware or VM assignment changes which
-functions are visible. VPD reads may require root.
-
-Management ports must belong to those PCI functions, use InfiniBand, and have
-`isSMdisabled` (capability-mask bit 10) clear. Results include the BDF, IB device,
-port number and GUID, sorted by BDF and numeric port. The GUID parser accepts
-compressed and full GIDs and emits a numeric 64-bit GUID. Missing trees,
-unreadable attributes and malformed data are errors; an existing tree with no
-eligible devices returns an empty list. Missing optional PCI VPD means that
-function has no marker.
-
-These rules follow NVIDIA's [HGX integration guide, release 19.0,
-§2.5.2](https://docs.nvidia.com/hgx-platforms/shared-nvswitch-gpu-passthrough-virtualization-integration-guide.pdf).
-Discovery does not infer a switch generation from the marker or implement
-in-band switch-ASIC enumeration. Rx00 management hardware using the same
-interface can use these rules, but its topology has not been hardware-validated.
-
 ## Testing
 
 The PCI ID database is a submodule, so `git submodule update --init` before
