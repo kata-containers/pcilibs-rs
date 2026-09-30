@@ -153,7 +153,7 @@ mod tests {
     }
 
     #[test]
-    fn coherent_hardware_does_not_become_hgx_or_claim_rack_membership() {
+    fn coherent_attachment_preserves_the_fabric_interface() {
         for (identity, family) in [
             (gpu(0x2342, 0x16eb), Family::Hopper),
             (gpu(0x2941, 0x2046), Family::Blackwell),
@@ -161,10 +161,11 @@ mod tests {
             (gpu(0x307e, 0x221a), Family::Rubin),
             (gpu(0x30ff, 0x221b), Family::Rubin),
         ] {
-            assert_eq!(
-                classify([identity], FabricInterface::None).kind,
-                Kind::Coherent(family)
-            );
+            for fabric in [FabricInterface::None, FabricInterface::ConnectX] {
+                let platform = classify([identity], fabric);
+                assert_eq!(platform.kind, Kind::Coherent(family));
+                assert_eq!(platform.fabric, fabric);
+            }
         }
     }
 

@@ -46,6 +46,9 @@ The attachment facts come from NVIDIA
 
 These are accelerator hardware profiles, also used in HGX-based OEM and DGX
 systems. They do not prove an exact chassis model or NVL72 rack membership.
+CPU identity is independent of GPU attachment and fabric management: a Vera CPU
+alone implies neither C2C attachment nor NVL72 membership. Coherent Rubin GPUs
+can coexist with ConnectX management; both facts remain in the result.
 No SMBIOS strings or OEM model mappings are used. A switch-only ConnectX
 assignment cannot prove Bx00 versus Rx00; its interface remains known while
 its platform kind is `Unknown`. Exact family information would need additional
