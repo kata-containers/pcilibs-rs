@@ -49,11 +49,52 @@ pub struct Topology {
     pub management_functions: Vec<ManagementFunction>,
 }
 
+impl Topology {
+    pub fn fabric_interface(&self) -> crate::platform::FabricInterface {
+        crate::platform::FabricInterface::from_presence(
+            !self.switches.is_empty(),
+            !self.management_functions.is_empty(),
+        )
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub struct ManagementFunction {
     pub bdf: String,
     /// Own `SMDL=SW_MNG` marker; keep separate from firmware-controlled SM capability.
     pub sw_mng: bool,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct DetectedPlatform {
+    pub topology: Topology,
+    pub platform: crate::platform::Platform,
+}
+
+/// Keep family evidence beside the management interface when GPUs are absent.
+pub fn discover_platform(sysfs: &Sysfs) -> io::Result<DetectedPlatform> {
+    let topology = discover(sysfs)?;
+    let gpus = topology
+        .gpus
+        .iter()
+        .map(|bdf| {
+            let path = sysfs.devices().join(bdf);
+            let read_id = |name| {
+                u16::try_from(attr_hex(&path, name)?).map_err(|_| {
+                    failed(
+                        io::ErrorKind::InvalidData,
+                        format!("{}: {name} exceeds 16 bits", path.display()),
+                    )
+                })
+            };
+            Ok(crate::platform::GpuIdentity {
+                device: read_id("device")?,
+                subsystem_device: read_id("subsystem_device")?,
+            })
+        })
+        .collect::<io::Result<Vec<_>>>()?;
+    let platform = crate::platform::classify(gpus, topology.fabric_interface());
+    Ok(DetectedPlatform { topology, platform })
 }
 
 /// Keep PCI identity with the GUID to avoid selecting an unrelated NIC.
@@ -623,5 +664,52 @@ mod tests {
             discover_management_ports(&fake.sysfs).unwrap_err().kind(),
             io::ErrorKind::NotFound
         );
+    }
+    #[test]
+    fn platform_preserves_the_service_vm_interface_without_gpus() {
+        let fake = testfs::fake();
+        mlx(&fake, "0000:05:00.0", true);
+        let detected = discover_platform(&fake.sysfs).unwrap();
+        assert_eq!(detected.platform.kind, crate::platform::Kind::Unknown);
+        assert_eq!(
+            detected.platform.fabric,
+            crate::platform::FabricInterface::ConnectX
+        );
+        assert_eq!(detected.platform.gpu_count, 0);
+        assert_eq!(detected.topology.management_functions.len(), 1);
+    }
+
+    #[test]
+    fn subsystem_identity_refines_the_managed_fabric_family() {
+        let fake = testfs::fake();
+        mlx(&fake, "0000:05:00.0", true);
+        let bdf = "0000:40:00.0";
+        fake.add_pci_device(bdf, 0x10de, 0x3002, 0x030200, None);
+        fs::write(fake.device(bdf).join("subsystem_device"), "0x2277").unwrap();
+        assert_eq!(
+            discover_platform(&fake.sysfs).unwrap().platform.kind,
+            crate::platform::Kind::HgxRx00
+        );
+        fs::write(fake.device(bdf).join("device"), "0x2941").unwrap();
+        fs::write(fake.device(bdf).join("subsystem_device"), "0x2046").unwrap();
+        assert_eq!(
+            discover_platform(&fake.sysfs).unwrap().platform.kind,
+            crate::platform::Kind::Coherent(crate::gpu::Family::Blackwell)
+        );
+    }
+
+    #[test]
+    fn missing_or_invalid_gpu_subsystem_identity_is_an_error() {
+        let fake = testfs::fake();
+        let bdf = "0000:40:00.0";
+        fake.add_pci_device(bdf, 0x10de, 0x3002, 0x030200, None);
+        assert!(discover_platform(&fake.sysfs).is_err());
+        for value in ["not hex", "0x10000"] {
+            fs::write(fake.device(bdf).join("subsystem_device"), value).unwrap();
+            assert!(discover_platform(&fake.sysfs).is_err());
+        }
+        fs::write(fake.device(bdf).join("subsystem_device"), "0x2277").unwrap();
+        fs::write(fake.device(bdf).join("device"), "0x10000").unwrap();
+        assert!(discover_platform(&fake.sysfs).is_err());
     }
 }

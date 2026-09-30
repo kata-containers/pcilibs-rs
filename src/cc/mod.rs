@@ -147,74 +147,10 @@ fn ppcie_knob_plan(mode: PpcieMode, bar0_decoupler: bool) -> Vec<(u32, u16)> {
     plan
 }
 
-/// One CC-capable GPU generation: a PCI device-id range and the two
-/// per-generation register facts and CC capabilities.
-/// Supporting a new chip is one row.
-pub struct Chip {
-    pub name: &'static str,
-    /// Inclusive PCI device-id range.
-    pub devid: (u16, u16),
-    /// Hopper uses the EMEM RPC channel, extra PRC knobs and a different
-    /// CC-state register; Blackwell and Rubin use MNOC and have a boot
-    /// BAR0 firewall.
-    pub hopper: bool,
-    /// Whether in-band CC enablement is supported on coherent variants.
-    /// gpu-admin-tools v2026.09.29 `nvidia_gpu_tools.py::Gpu.__init__`
-    /// restricts C2C enablement on Hopper and Blackwell only.
-    pub c2c_cc_supported: bool,
-    /// NV_THERM_I2CS_SCRATCH_FSP_BOOT_COMPLETE: reads 0xff once the FSP
-    /// has finished booting the GPU.
-    pub boot_complete: u32,
-}
-
-/// Device-id ranges from gpu-admin-tools (`gpu/devid_chips.py`).
-#[rustfmt::skip]
-pub const CHIPS: &[Chip] = &[
-    Chip { name: "GH100", devid: (0x22f0, 0x237f), hopper: true, c2c_cc_supported: false, boot_complete: 0x200bc },
-    Chip { name: "GB100", devid: (0x2900, 0x297f), hopper: false, c2c_cc_supported: false, boot_complete: 0x200bc },
-    Chip { name: "GB102", devid: (0x2980, 0x29ff), hopper: false, c2c_cc_supported: false, boot_complete: 0x200bc },
-    Chip { name: "GB110", devid: (0x3180, 0x31ff), hopper: false, c2c_cc_supported: false, boot_complete: 0x200bc },
-    Chip { name: "GB112", devid: (0x3200, 0x327f), hopper: false, c2c_cc_supported: false, boot_complete: 0x200bc },
-    Chip { name: "GB202", devid: (0x2b80, 0x2bff), hopper: false, c2c_cc_supported: false, boot_complete: 0xad00bc },
-    Chip { name: "GB203", devid: (0x2c00, 0x2c7f), hopper: false, c2c_cc_supported: false, boot_complete: 0xad00bc },
-    Chip { name: "GB205", devid: (0x2f00, 0x2f7f), hopper: false, c2c_cc_supported: false, boot_complete: 0xad00bc },
-    Chip { name: "GB206", devid: (0x2d00, 0x2d7f), hopper: false, c2c_cc_supported: false, boot_complete: 0xad00bc },
-    Chip { name: "GB207", devid: (0x2d80, 0x2dff), hopper: false, c2c_cc_supported: false, boot_complete: 0xad00bc },
-    // gpu-admin-tools v2026.09.29 (44f261a7): gpu/devid_chips.py;
-    // gpu/regs/gr100/therm.py and gr102/therm.py import the GB202 boot register.
-    Chip { name: "GR100", devid: (0x3000, 0x307f), hopper: false, c2c_cc_supported: true, boot_complete: 0xad00bc },
-    Chip { name: "GR102", devid: (0x3080, 0x30ff), hopper: false, c2c_cc_supported: true, boot_complete: 0xad00bc },
-];
-
-/// Coherently attached devices, independent of in-band CC enablement support.
-///
-/// From gpu-admin-tools' `has_c2c`, which keys on (device, subsystem device)
-/// pairs; only the device half is kept, no subsystem id being read anywhere in
-/// this crate. That over-matches `0x29bc` and `0x31c2`, which have
-/// non-coherent variants — a needless refusal, chosen over mistaking a
-/// coherent GPU for an ordinary one. Rubin remains coherent even though
-/// gpu-admin-tools `Gpu.__init__` permits its in-band CC enablement.
-const C2C_DEVIDS: &[u16] = &[
-    0x2342, 0x2343, 0x2345, 0x2348, // GH200
-    0x2941, 0x297e, 0x29bc, // GB200
-    0x31c2, // GB300
-    0x3041, 0x307e, 0x30ff, // Rubin C2C variants
-];
-
-/// Also the set needing a vfio driver that can map coherent memory. Wider than
-/// that driver's own table: a part can be coherently attached before any
-/// released kernel claims it.
-pub fn is_c2c(devid: u16) -> bool {
-    C2C_DEVIDS.contains(&devid)
-}
-
-pub fn chip_for(devid: u16) -> Option<&'static Chip> {
-    CHIPS
-        .iter()
-        .find(|c| (c.devid.0..=c.devid.1).contains(&devid))
-}
+pub use crate::gpu::{chip_for, is_c2c, Chip, CHIPS};
 
 const NV_PMC_BOOT_0: u32 = 0x0;
+
 /// CC state lives in secure scratch, bits 1:0: 0 off, 1 on, 3 devtools.
 const CC_STATE_HOPPER: u32 = 0x1182cc;
 const CC_STATE_BLACKWELL: u32 = 0x590;
@@ -691,19 +627,6 @@ mod tests {
         assert!(chip.c2c_cc_supported);
         assert!(chip_for(0x2fff).is_none());
         assert!(chip_for(0x3100).is_none());
-    }
-
-    #[test]
-    fn c2c_blocks_enable_only() {
-        assert!(C2C_DEVIDS.contains(&0x2342)); // GH200
-        assert_eq!(chip_for(0x2342).unwrap().name, "GH100");
-    }
-
-    #[test]
-    fn every_c2c_id_is_a_known_chip() {
-        for devid in C2C_DEVIDS {
-            assert!(chip_for(*devid).is_some(), "{devid:#06x} has no chip row");
-        }
     }
 
     #[test]
