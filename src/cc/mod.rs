@@ -148,14 +148,20 @@ fn ppcie_knob_plan(mode: PpcieMode, bar0_decoupler: bool) -> Vec<(u32, u16)> {
 }
 
 /// One CC-capable GPU generation: a PCI device-id range and the two
-/// per-generation register facts.  Supporting a new chip is one row.
+/// per-generation register facts and CC capabilities.
+/// Supporting a new chip is one row.
 pub struct Chip {
     pub name: &'static str,
     /// Inclusive PCI device-id range.
     pub devid: (u16, u16),
     /// Hopper uses the EMEM RPC channel, extra PRC knobs and a different
-    /// CC-state register; Blackwell uses MNOC and has a boot BAR0 firewall.
+    /// CC-state register; Blackwell and Rubin use MNOC and have a boot
+    /// BAR0 firewall.
     pub hopper: bool,
+    /// Whether in-band CC enablement is supported on coherent variants.
+    /// gpu-admin-tools v2026.09.29 `nvidia_gpu_tools.py::Gpu.__init__`
+    /// restricts C2C enablement on Hopper and Blackwell only.
+    pub c2c_cc_supported: bool,
     /// NV_THERM_I2CS_SCRATCH_FSP_BOOT_COMPLETE: reads 0xff once the FSP
     /// has finished booting the GPU.
     pub boot_complete: u32,
@@ -164,29 +170,35 @@ pub struct Chip {
 /// Device-id ranges from gpu-admin-tools (`gpu/devid_chips.py`).
 #[rustfmt::skip]
 pub const CHIPS: &[Chip] = &[
-    Chip { name: "GH100", devid: (0x22f0, 0x237f), hopper: true, boot_complete: 0x200bc },
-    Chip { name: "GB100", devid: (0x2900, 0x297f), hopper: false, boot_complete: 0x200bc },
-    Chip { name: "GB102", devid: (0x2980, 0x29ff), hopper: false, boot_complete: 0x200bc },
-    Chip { name: "GB110", devid: (0x3180, 0x31ff), hopper: false, boot_complete: 0x200bc },
-    Chip { name: "GB112", devid: (0x3200, 0x327f), hopper: false, boot_complete: 0x200bc },
-    Chip { name: "GB202", devid: (0x2b80, 0x2bff), hopper: false, boot_complete: 0xad00bc },
-    Chip { name: "GB203", devid: (0x2c00, 0x2c7f), hopper: false, boot_complete: 0xad00bc },
-    Chip { name: "GB205", devid: (0x2f00, 0x2f7f), hopper: false, boot_complete: 0xad00bc },
-    Chip { name: "GB206", devid: (0x2d00, 0x2d7f), hopper: false, boot_complete: 0xad00bc },
-    Chip { name: "GB207", devid: (0x2d80, 0x2dff), hopper: false, boot_complete: 0xad00bc },
+    Chip { name: "GH100", devid: (0x22f0, 0x237f), hopper: true, c2c_cc_supported: false, boot_complete: 0x200bc },
+    Chip { name: "GB100", devid: (0x2900, 0x297f), hopper: false, c2c_cc_supported: false, boot_complete: 0x200bc },
+    Chip { name: "GB102", devid: (0x2980, 0x29ff), hopper: false, c2c_cc_supported: false, boot_complete: 0x200bc },
+    Chip { name: "GB110", devid: (0x3180, 0x31ff), hopper: false, c2c_cc_supported: false, boot_complete: 0x200bc },
+    Chip { name: "GB112", devid: (0x3200, 0x327f), hopper: false, c2c_cc_supported: false, boot_complete: 0x200bc },
+    Chip { name: "GB202", devid: (0x2b80, 0x2bff), hopper: false, c2c_cc_supported: false, boot_complete: 0xad00bc },
+    Chip { name: "GB203", devid: (0x2c00, 0x2c7f), hopper: false, c2c_cc_supported: false, boot_complete: 0xad00bc },
+    Chip { name: "GB205", devid: (0x2f00, 0x2f7f), hopper: false, c2c_cc_supported: false, boot_complete: 0xad00bc },
+    Chip { name: "GB206", devid: (0x2d00, 0x2d7f), hopper: false, c2c_cc_supported: false, boot_complete: 0xad00bc },
+    Chip { name: "GB207", devid: (0x2d80, 0x2dff), hopper: false, c2c_cc_supported: false, boot_complete: 0xad00bc },
+    // gpu-admin-tools v2026.09.29 (44f261a7): gpu/devid_chips.py;
+    // gpu/regs/gr100/therm.py and gr102/therm.py import the GB202 boot register.
+    Chip { name: "GR100", devid: (0x3000, 0x307f), hopper: false, c2c_cc_supported: true, boot_complete: 0xad00bc },
+    Chip { name: "GR102", devid: (0x3080, 0x30ff), hopper: false, c2c_cc_supported: true, boot_complete: 0xad00bc },
 ];
 
-/// CC is owned by system firmware here, so raising it in band is refused.
+/// Coherently attached devices, independent of in-band CC enablement support.
 ///
 /// From gpu-admin-tools' `has_c2c`, which keys on (device, subsystem device)
 /// pairs; only the device half is kept, no subsystem id being read anywhere in
 /// this crate. That over-matches `0x29bc` and `0x31c2`, which have
 /// non-coherent variants — a needless refusal, chosen over mistaking a
-/// coherent GPU for an ordinary one.
+/// coherent GPU for an ordinary one. Rubin remains coherent even though
+/// gpu-admin-tools `Gpu.__init__` permits its in-band CC enablement.
 const C2C_DEVIDS: &[u16] = &[
     0x2342, 0x2343, 0x2345, 0x2348, // GH200
     0x2941, 0x297e, 0x29bc, // GB200
     0x31c2, // GB300
+    0x3041, 0x307e, 0x30ff, // Rubin C2C variants
 ];
 
 /// Also the set needing a vfio driver that can map coherent memory. Wider than
@@ -271,11 +283,11 @@ impl Gpu {
         );
         let chip = chip_for(pci.device).with_context(|| {
             format!(
-                "{}: device {:#06x} is not a CC-capable GPU (Hopper or Blackwell)",
+                "{}: device {:#06x} is not a CC-capable GPU (Hopper, Blackwell or Rubin)",
                 pci.bdf, pci.device
             )
         })?;
-        let c2c = C2C_DEVIDS.contains(&pci.device);
+        let c2c = is_c2c(pci.device);
         let gpu = Self { pci, chip, c2c };
 
         gpu.wait_for_bar0()?;
@@ -306,7 +318,7 @@ impl Gpu {
         self.pci.device
     }
 
-    /// Blackwell keeps a BAR0 firewall up during boot; every register
+    /// Blackwell and Rubin keep a BAR0 firewall up during boot; every register
     /// reads all-ones until the FSP lowers it.
     fn wait_for_bar0(&self) -> Result<()> {
         if self.chip.hopper {
@@ -351,9 +363,9 @@ impl Gpu {
     /// Persist a new CC mode in the FSP.  It takes effect on the next GPU
     /// reset — call [`Gpu::reset`] afterwards.
     pub fn set_cc_mode(&self, mode: CcMode) -> Result<()> {
-        if self.c2c && mode != CcMode::Off {
+        if self.c2c && !self.chip.c2c_cc_supported && mode != CcMode::Off {
             bail!(
-                "{}: enabling CC in-band is not supported on C2C (Grace) systems",
+                "{}: enabling CC in-band is not supported on Hopper/Blackwell C2C systems",
                 self.bdf()
             );
         }
@@ -579,6 +591,8 @@ mod tests {
     const GH100: u16 = 0x2330;
     const GH200: u16 = 0x2342;
     const GB100: u16 = 0x2901;
+    const GR100: u16 = 0x3021;
+    const GR102: u16 = 0x3080;
     /// A100: enumerable, but no CC.
     const AMPERE: u16 = 0x20b0;
     /// An NVSwitch, which is known by its class and not this id.
@@ -663,14 +677,28 @@ mod tests {
         assert!(chip_for(0x20b0).is_none()); // A100: no CC
     }
 
+    #[rstest]
+    #[case::gr100_start(0x3000, "GR100")]
+    #[case::gr100_end(0x307f, "GR100")]
+    #[case::gr102_start(0x3080, "GR102")]
+    #[case::gr102_old_boundary(0x30bf, "GR102")]
+    #[case::gr102_end(0x30ff, "GR102")]
+    fn rubin_chip_ranges_match_upstream(#[case] devid: u16, #[case] name: &str) {
+        let chip = chip_for(devid).unwrap();
+        assert_eq!(chip.name, name);
+        assert_eq!(chip.boot_complete, 0xad00bc);
+        assert!(!chip.hopper);
+        assert!(chip.c2c_cc_supported);
+        assert!(chip_for(0x2fff).is_none());
+        assert!(chip_for(0x3100).is_none());
+    }
+
     #[test]
     fn c2c_blocks_enable_only() {
         assert!(C2C_DEVIDS.contains(&0x2342)); // GH200
         assert_eq!(chip_for(0x2342).unwrap().name, "GH100");
     }
 
-    /// NVIDIA also marks 0x3041, 0x307e and 0x30ff coherent; they are absent
-    /// because `CHIPS` has no row for them, and this is what keeps that honest.
     #[test]
     fn every_c2c_id_is_a_known_chip() {
         for devid in C2C_DEVIDS {
@@ -802,6 +830,8 @@ mod tests {
     #[case::h100(0x2330, true)]
     #[case::gb100(0x2901, false)]
     #[case::gb202(0x2b85, false)]
+    #[case::gr100(GR100, false)]
+    #[case::gr102(GR102, false)]
     fn ppcie_is_hopper_only(#[case] devid: u16, #[case] expected: bool) {
         assert_eq!(chip_for(devid).unwrap().hopper, expected);
     }
@@ -809,6 +839,10 @@ mod tests {
     #[rstest]
     #[case::gh200(GH200, true)]
     #[case::h100_sxm(GH100, false)]
+    #[case::rubin_3041(0x3041, true)]
+    #[case::rubin_307e(0x307e, true)]
+    #[case::rubin_30ff(0x30ff, true)]
+    #[case::rubin_pcie(GR100, false)]
     fn c2c_is_the_coherently_attached_parts(#[case] devid: u16, #[case] expected: bool) {
         assert_eq!(is_c2c(devid), expected);
     }
@@ -820,11 +854,18 @@ mod tests {
         fake.add_pci_device("0000:04:00.0", 0x8086, 0x100e, 0x020000, None);
         fake.add_pci_device("0000:05:00.0", 0x10de, AMPERE, GPU_CLASS, None);
         fake.add_device("0000:06:00.0", None); // no ids to read
+        fake.add_pci_device("0000:07:00.0", 0x10de, GR100, GPU_CLASS, None);
+        fake.add_pci_device("0000:08:00.0", 0x10de, GR102, GPU_CLASS, None);
         std::fs::create_dir(fake.sysfs.devices().join("not-an-address")).unwrap();
 
         assert_eq!(
             discover(&fake.sysfs).unwrap(),
-            ["0000:03:00.0", "0000:65:00.0"]
+            [
+                "0000:03:00.0",
+                "0000:07:00.0",
+                "0000:08:00.0",
+                "0000:65:00.0"
+            ]
         );
     }
 
@@ -929,6 +970,9 @@ mod tests {
     #[case::hopper_devtools(GH100, CC_STATE_HOPPER, 0x3, CcMode::DevTools)]
     #[case::blackwell_off(GB100, CC_STATE_BLACKWELL, 0x0, CcMode::Off)]
     #[case::blackwell_on(GB100, CC_STATE_BLACKWELL, 0x1, CcMode::On)]
+    #[case::rubin_off(GR100, CC_STATE_BLACKWELL, 0x0, CcMode::Off)]
+    #[case::rubin_on(GR100, CC_STATE_BLACKWELL, 0x1, CcMode::On)]
+    #[case::rubin_devtools(GR102, CC_STATE_BLACKWELL, 0x3, CcMode::DevTools)]
     fn a_gpu_reports_the_cc_mode_it_is_running(
         #[case] devid: u16,
         #[case] register: u32,
@@ -1026,17 +1070,62 @@ mod tests {
         assert_eq!(firmware.knob(fsp::KNOB_CCM), Some(0));
     }
 
-    /// The mode belongs to system firmware on a coherently attached part,
-    /// so raising it in band is refused before anything is written.
+    /// Hopper/Blackwell C2C enablement is refused before anything is written.
     #[rstest]
-    fn enabling_cc_on_a_c2c_gpu_is_refused() {
-        let (_fake, firmware, gpu) = modelled_gpu(GH200);
+    #[case::gh200(GH200)]
+    #[case::gb200(0x2941)]
+    fn enabling_cc_on_a_hopper_or_blackwell_c2c_gpu_is_refused(
+        #[case] devid: u16,
+        #[values(CcMode::On, CcMode::DevTools)] mode: CcMode,
+    ) {
+        let (_fake, firmware, gpu) = modelled_gpu(devid);
         assert!(gpu.c2c);
 
-        let err = why(gpu.set_cc_mode(CcMode::On));
+        let err = why(gpu.set_cc_mode(mode));
 
-        assert!(err.contains("not supported on C2C"), "{err}");
+        assert!(
+            err.contains("not supported on Hopper/Blackwell C2C"),
+            "{err}"
+        );
         assert_eq!(firmware.writes(), 0);
+    }
+
+    /// Rubin uses the Blackwell MNOC path, including on coherent variants.
+    /// Its CC transition must not touch the Hopper-only knobs.
+    #[rstest]
+    fn rubin_cc_modes_use_mnoc_and_preserve_other_knobs(
+        #[values(GR100, GR102, 0x3041, 0x307e, 0x30ff)] devid: u16,
+        #[values(CcMode::On, CcMode::DevTools, CcMode::Off)] mode: CcMode,
+    ) {
+        let (_fake, firmware, gpu) = modelled_gpu(devid);
+        firmware.set_knob(fsp::KNOB_CCM, u16::from(mode == CcMode::Off));
+        firmware.set_knob(fsp::KNOB_CCD, u16::from(mode != CcMode::DevTools));
+        let untouched = [
+            fsp::KNOB_2,
+            fsp::KNOB_4,
+            fsp::KNOB_34,
+            fsp::KNOB_PPCIE,
+            fsp::KNOB_BAR0_DECOUPLER,
+        ];
+        for knob in untouched {
+            firmware.set_knob(knob, 1);
+        }
+
+        gpu.set_cc_mode(mode).unwrap();
+
+        assert_eq!(firmware.writes(), 2);
+
+        assert_eq!(
+            firmware.knob(fsp::KNOB_CCM),
+            Some(u16::from(mode != CcMode::Off))
+        );
+        assert_eq!(
+            firmware.knob(fsp::KNOB_CCD),
+            Some(u16::from(mode == CcMode::DevTools))
+        );
+        for knob in untouched {
+            assert_eq!(firmware.knob(knob), Some(1), "knob {knob:#x}");
+        }
     }
 
     /// Turning it off there is not raising it, so that still goes through.
@@ -1075,8 +1164,11 @@ mod tests {
     }
 
     #[rstest]
-    fn a_blackwell_gpu_has_no_ppcie_mode_either_way() {
-        let (_fake, _firmware, gpu) = modelled_gpu(GB100);
+    #[case::blackwell(GB100)]
+    #[case::gr100(GR100)]
+    #[case::gr102(GR102)]
+    fn a_post_hopper_gpu_has_no_ppcie_mode_either_way(#[case] devid: u16) {
+        let (_fake, _firmware, gpu) = modelled_gpu(devid);
         assert!(!gpu.supports_ppcie());
 
         for err in [
