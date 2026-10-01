@@ -237,7 +237,7 @@ mod tests {
         fs::write(fake.device(bdf).join("subsystem_device"), "0x1234").unwrap();
         let path = fake.root().join("gpus.catalog");
         fs::write(&path, "ffff 1234 GR100 sxm\n").unwrap();
-        let file = crate::gpu::catalog::CatalogFile::read(&path).unwrap();
+        let file = crate::gpu::catalog::CatalogFile::read(fake.root()).unwrap();
         assert_eq!(
             discover_with_catalog(&fake.sysfs, file.catalog())
                 .unwrap()

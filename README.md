@@ -42,8 +42,7 @@ When GPUs are visible, NVIDIA device and subsystem-device IDs distinguish SXM,
 PCIe and coherent attachment. The pure `platform::classify` function combines
 that evidence with the management interface to report `HgxHx00`, `HgxBx00`,
 `HgxRx00`, `Pcie(Family)`, or `Coherent(Family)`. Mixed and unknown evidence remain explicit.
-The attachment facts come from NVIDIA
-[gpu-admin-tools v2026.09.29](https://github.com/NVIDIA/gpu-admin-tools/blob/44f261a7ebff96559488230b420e4a3035b30d58/gpu/devid_properties.py).
+The attachment facts follow NVIDIA gpu-admin-tools `main`.
 
 These are accelerator hardware profiles, also used in HGX-based OEM and DGX
 systems. They do not prove an exact chassis model or NVL72 rack membership.
@@ -63,12 +62,25 @@ IDs. VFIO driver selection uses kernel aliases independently of this property.
 
 ### GPU device-ID extensions
 
-New variants of supported chips should not require rebuilding every consumer.
-`gpu::catalog::Catalog` extends the bundled
-[`data/nvidia-gpus.catalog`](data/nvidia-gpus.catalog) with caller-supplied records.
-Parsing and lookup are allocation-free and available with `default-features = false`.
-Linux callers can load a bounded file with `gpu::catalog::CatalogFile::read`.
-Neither path downloads data or changes a process-global catalog.
+There are two ways to add mappings for supported chips:
+
+- **Bundle them:** add a `.catalog` file directly to `data/` and rebuild.
+  The build validates and merges every `data/*.catalog` file into the built-in
+  database, including when `default-features = false`. Adding, editing or removing
+  a catalog triggers a rebuild. No Rust source changes or file list updates are needed.
+- **Load them at runtime:** configure the application to call
+  `gpu::catalog::CatalogFile::read` with a directory such as `/etc/pcilibs/gpus.d`.
+  Users can then add `.catalog` files there and restart or reload the application
+  without rebuilding it. The same API also accepts a single file.
+
+Directory loading reads immediate `.catalog` files, including symlinks to files;
+it ignores other filenames and subdirectories. Each load returns a snapshot.
+Applications pass its `catalog()` to classification, discovery or CC opening,
+and call `read` again to pick up changes. Existing APIs without a catalog argument
+use the bundled database. Neither workflow downloads data or changes global state.
+
+The borrowed `gpu::catalog::Catalog::parse` API and lookup remain allocation-free
+and available with `default-features = false`. Filesystem loading requires `std`.
 
 Each record contains a device ID, subsystem device ID, existing chip profile,
 and attachment. There is no header line. For example, this
@@ -79,24 +91,28 @@ and attachment. There is no header line. For example, this
 ```
 
 An extension normally contains only new mappings verified against NVIDIA's
-`gpu-admin-tools` or hardware documentation. IDs are hexadecimal and records must
-be sorted numerically by device/subsystem ID. Subsystem `*` is permitted only as
+`gpu-admin-tools` or hardware documentation. IDs are hexadecimal and each file
+must be sorted numerically by device/subsystem ID. Files may cover interleaved ID
+ranges; the loader merges them by identity. Subsystem `*` is permitted only as
 an explicit assertion that the mapping applies to every variant; it cannot
 overlap exact records in the extension or contradict a built-in variant.
 The vendor is implicitly NVIDIA (`10de`); this is a GPU catalog, not a general
 PCI or VFIO driver database.
 
 Unlisted identities keep their built-in mappings. Conflicts with built-in
-identities or chip ranges, duplicate/overlapping extension records, unknown chip
-profiles, and malformed fields are errors. Identical built-in records are
-accepted so an extension survives a library update that
-incorporates those IDs. Files are limited to 64 KiB and 1,024 extension records.
-A missing or invalid requested file is an error, never an implicit fallback.
+identities or chip ranges, overlapping records, unknown chip profiles, and
+malformed fields are errors. Identical records across files are deduplicated;
+duplicates within a file are errors. Identical built-in records are accepted so
+an extension survives a library update that incorporates those IDs. Limits of
+64 KiB and 1,024 records apply to each complete input before deduplication,
+including the combined contents of a directory. A directory can contain at most
+1,024 catalog files. Missing or invalid requested inputs are errors; empty
+directories add no mappings.
 
 ```rust,no_run
 use pcilibs_rs::{gpu::catalog::CatalogFile, platform, Sysfs};
 
-let extension = CatalogFile::read(std::path::Path::new("/etc/pcilibs/gpus.catalog"))?;
+let extension = CatalogFile::read(std::path::Path::new("/etc/pcilibs/gpus.d"))?;
 let catalog = extension.catalog();
 let detected = platform::discover_with_catalog(&Sysfs::default(), catalog)?;
 println!("platform={:?}", detected.platform);
@@ -107,7 +123,11 @@ Pure callers use `platform::classify_with_catalog`; CC consumers use
 `cc::Gpu::open_in_with_catalog` to apply the same exact mapping before BAR access.
 Existing discovery/opening APIs continue using built-in knowledge. Keep the
 loaded file alive for its borrowed catalog; replace it explicitly between runs.
-The example accepts an optional extension path: `cargo run --example platform -- /path/to/gpus.catalog`.
+The example accepts a file or directory:
+
+```sh
+cargo run --example platform -- /etc/pcilibs/gpus.d
+```
 
 Catalogs are trusted hardware configuration: an incorrect new mapping can select
 the wrong existing register profile. They cannot supply registers, firmware
@@ -208,7 +228,7 @@ under NVIDIA's copyright:
 
 | Path | License |
 | --- | --- |
-| `src/cc/`, `src/gpu.rs`, `data/nvidia-gpus.catalog` | MIT — a Rust port of the CC subset of NVIDIA's [`gpu-admin-tools`](https://github.com/NVIDIA/gpu-admin-tools) |
+| `src/cc/`, `src/gpu.rs`, `src/gpu/chips.rs`, `data/nvidia-gpus.catalog` | MIT — a Rust port of the CC subset of NVIDIA's [`gpu-admin-tools`](https://github.com/NVIDIA/gpu-admin-tools) |
 | `src/pci_dev.rs` | MIT — the generic PCI register access the port needed, which this crate did not have |
 | everything else | Apache-2.0 |
 

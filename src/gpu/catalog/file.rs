@@ -1,26 +1,21 @@
 // Copyright (c) NVIDIA CORPORATION
 // SPDX-License-Identifier: Apache-2.0
 
-use super::{Catalog, MAX_BYTES};
-use std::{
-    fs::File,
-    io::{self, Read},
-    path::Path,
-};
+use super::{input, Catalog};
+use std::{io, path::Path};
 
-/// Owns one validated snapshot; callers choose when to replace it.
+/// Owns a validated snapshot from a file or directory; callers choose when to reload it.
 #[derive(Debug)]
 pub struct CatalogFile {
     text: String,
 }
 
 impl CatalogFile {
+    /// Read a file, or merge the immediate `.catalog` files in a directory.
+    /// Identical records across files are accepted; conflicts are errors.
     /// Explicit loading prevents a missing or invalid update from becoming a fallback.
     pub fn read(path: &Path) -> io::Result<Self> {
-        let mut text = String::new();
-        File::open(path)
-            .and_then(|file| file.take((MAX_BYTES + 1) as u64).read_to_string(&mut text))
-            .map_err(|error| crate::context(error, path.display()))?;
+        let text = input::read(path)?;
         Catalog::parse(&text).map_err(|error| {
             crate::context(
                 io::Error::new(io::ErrorKind::InvalidData, error),
@@ -41,6 +36,7 @@ impl CatalogFile {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::gpu::catalog::MAX_BYTES;
     use rstest::{fixture, rstest};
     use tempfile::TempDir;
 
@@ -64,6 +60,39 @@ mod tests {
             second.catalog().lookup(0xffff, 0).unwrap().chip.name,
             "GH100"
         );
+    }
+
+    #[rstest]
+    fn directory_reload_picks_up_added_and_removed_files(directory: TempDir) {
+        let first_path = directory.path().join("first.catalog");
+        std::fs::write(&first_path, "fffe * GR100 coherent\n").unwrap();
+        let first = CatalogFile::read(directory.path()).unwrap();
+        std::fs::write(
+            directory.path().join("second.catalog"),
+            "ffff * GH100 sxm\n",
+        )
+        .unwrap();
+        let second = CatalogFile::read(directory.path()).unwrap();
+        std::fs::remove_file(first_path).unwrap();
+        let third = CatalogFile::read(directory.path()).unwrap();
+        assert!(first.catalog().lookup(0xffff, 0).is_none());
+        assert!(second.catalog().lookup(0xfffe, 0).is_some());
+        assert!(second.catalog().lookup(0xffff, 0).is_some());
+        assert!(third.catalog().lookup(0xfffe, 0).is_none());
+        assert!(third.catalog().lookup(0xffff, 0).is_some());
+        assert!(third.catalog().lookup(0x3041, 0x221a).is_some());
+    }
+
+    #[rstest]
+    fn directory_cannot_override_a_builtin_identity(directory: TempDir) {
+        std::fs::write(
+            directory.path().join("bad.catalog"),
+            "3041 221a GR100 pcie\n",
+        )
+        .unwrap();
+        let error = CatalogFile::read(directory.path()).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("built-in identity"));
     }
 
     #[rstest]

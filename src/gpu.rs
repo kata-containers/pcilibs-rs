@@ -23,60 +23,14 @@
 
 pub mod catalog;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Family {
-    Hopper,
-    Blackwell,
-    Rubin,
-}
+mod chips;
+pub(crate) use chips::chip_for_range;
+pub use chips::{Attachment, Chip, Family, CHIPS};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Attachment {
-    Pcie,
-    Sxm,
-    Coherent,
-    Unknown,
+/// Find a supported chip by its compiled range or a bundled catalog mapping.
+pub fn chip_for(devid: u16) -> Option<&'static Chip> {
+    chip_for_range(devid).or_else(|| catalog::Catalog::builtin().lookup_chip(devid))
 }
-
-/// One CC-capable GPU generation: a PCI device-id range and the two
-/// per-generation register facts and CC capabilities.
-/// Supporting a new chip is one row.
-pub struct Chip {
-    pub family: Family,
-    pub name: &'static str,
-    /// Inclusive PCI device-id range.
-    pub devid: (u16, u16),
-    /// Hopper uses the EMEM RPC channel, extra PRC knobs and a different
-    /// CC-state register; Blackwell and Rubin use MNOC and have a boot
-    /// BAR0 firewall.
-    pub hopper: bool,
-    /// Whether in-band CC enablement is supported on coherent variants.
-    /// gpu-admin-tools v2026.09.29 `nvidia_gpu_tools.py::Gpu.__init__`
-    /// restricts C2C enablement on Hopper and Blackwell only.
-    pub c2c_cc_supported: bool,
-    /// NV_THERM_I2CS_SCRATCH_FSP_BOOT_COMPLETE: reads 0xff once the FSP
-    /// has finished booting the GPU.
-    pub boot_complete: u32,
-}
-
-/// Device-id ranges from gpu-admin-tools (`gpu/devid_chips.py`).
-#[rustfmt::skip]
-pub const CHIPS: &[Chip] = &[
-    Chip { family: Family::Hopper, name: "GH100", devid: (0x22f0, 0x237f), hopper: true, c2c_cc_supported: false, boot_complete: 0x200bc },
-    Chip { family: Family::Blackwell, name: "GB100", devid: (0x2900, 0x297f), hopper: false, c2c_cc_supported: false, boot_complete: 0x200bc },
-    Chip { family: Family::Blackwell, name: "GB102", devid: (0x2980, 0x29ff), hopper: false, c2c_cc_supported: false, boot_complete: 0x200bc },
-    Chip { family: Family::Blackwell, name: "GB110", devid: (0x3180, 0x31ff), hopper: false, c2c_cc_supported: false, boot_complete: 0x200bc },
-    Chip { family: Family::Blackwell, name: "GB112", devid: (0x3200, 0x327f), hopper: false, c2c_cc_supported: false, boot_complete: 0x200bc },
-    Chip { family: Family::Blackwell, name: "GB202", devid: (0x2b80, 0x2bff), hopper: false, c2c_cc_supported: false, boot_complete: 0xad00bc },
-    Chip { family: Family::Blackwell, name: "GB203", devid: (0x2c00, 0x2c7f), hopper: false, c2c_cc_supported: false, boot_complete: 0xad00bc },
-    Chip { family: Family::Blackwell, name: "GB205", devid: (0x2f00, 0x2f7f), hopper: false, c2c_cc_supported: false, boot_complete: 0xad00bc },
-    Chip { family: Family::Blackwell, name: "GB206", devid: (0x2d00, 0x2d7f), hopper: false, c2c_cc_supported: false, boot_complete: 0xad00bc },
-    Chip { family: Family::Blackwell, name: "GB207", devid: (0x2d80, 0x2dff), hopper: false, c2c_cc_supported: false, boot_complete: 0xad00bc },
-    // gpu-admin-tools v2026.09.29 (44f261a7): gpu/devid_chips.py;
-    // gpu/regs/gr100/therm.py and gr102/therm.py import the GB202 boot register.
-    Chip { family: Family::Rubin, name: "GR100", devid: (0x3000, 0x307f), hopper: false, c2c_cc_supported: true, boot_complete: 0xad00bc },
-    Chip { family: Family::Rubin, name: "GR102", devid: (0x3080, 0x30ff), hopper: false, c2c_cc_supported: true, boot_complete: 0xad00bc },
-];
 
 /// Conservative compatibility API for callers without subsystem identity.
 /// Use a catalog lookup when the exact attachment is needed.
@@ -84,14 +38,8 @@ pub fn is_c2c(devid: u16) -> bool {
     catalog::Catalog::builtin().may_be_coherent(devid)
 }
 
-pub fn chip_for(devid: u16) -> Option<&'static Chip> {
-    CHIPS
-        .iter()
-        .find(|c| (c.devid.0..=c.devid.1).contains(&devid))
-}
-
 /// Device IDs alone alias PCIe, SXM and coherent variants on some chips.
-/// NVIDIA gpu-admin-tools v2026.09.29, gpu/devid_properties.py (44f261a7).
+/// NVIDIA gpu-admin-tools, gpu/devid_properties.py.
 /// Device-only callers can use the conservative `is_c2c` compatibility API.
 pub fn attachment(device: u16, subsystem_device: u16) -> Attachment {
     catalog::Catalog::builtin()

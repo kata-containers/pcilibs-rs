@@ -5,49 +5,33 @@
 //!
 //! Each record is `DEVICE SUBSYSTEM_DEVICE CHIP ATTACHMENT`, sorted by numeric
 //! device/subsystem ID. IDs are four hexadecimal digits (optional `0x`);
-//! subsystem `*` explicitly covers every variant. Attachments are `pcie`, `sxm`, or `coherent`. Chip names
-//! must name an existing [`super::CHIPS`] profile. Blank lines and whole-line
+//! subsystem `*` explicitly covers every variant. Attachments are `pcie`, `sxm`,
+//! or `coherent`. Chip names must name an existing [`super::CHIPS`] profile. Blank lines and whole-line
 //! `#` comments are allowed. Wildcards cannot overlap exact records.
 //!
 //! External records extend the bundled mappings. Conflicting built-in facts are
 //! rejected; identical records remain valid after a library update incorporates
 //! them. Identities absent from both catalogs stay unknown.
+//! Every `data/*.catalog` file is validated and bundled at build time.
+//! With `std`, `CatalogFile::read` also accepts a directory of `.catalog` files.
 //! Empty or comment-only extensions add no mappings.
 //! Parsing and lookup borrow the input and require neither `std` nor allocation.
 
-use core::fmt;
+use super::{Attachment, Chip};
+use records::{lines, parse_entry};
 
-use super::{Attachment, Chip, CHIPS};
+mod records;
+pub use records::{Error, Properties, MAX_BYTES, MAX_ENTRIES};
+
+#[cfg(feature = "std")]
+mod input;
 
 #[cfg(feature = "std")]
 mod file;
 #[cfg(feature = "std")]
 pub use file::CatalogFile;
 
-pub const MAX_BYTES: usize = 64 * 1024;
-pub const MAX_ENTRIES: usize = 1024;
-const BUILTIN: &str = include_str!("../../data/nvidia-gpus.catalog");
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Error {
-    /// One-based line number; zero denotes a whole-file error.
-    pub line: usize,
-    pub message: &'static str,
-}
-
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "GPU catalog line {}: {}", self.line, self.message)
-    }
-}
-
-impl core::error::Error for Error {}
-
-#[derive(Clone, Copy)]
-pub struct Properties {
-    pub chip: &'static Chip,
-    pub attachment: Attachment,
-}
+const BUILTIN: &str = include_str!(concat!(env!("OUT_DIR"), "/nvidia-gpus.catalog"));
 
 impl Properties {
     /// Coherent attachment and firmware CC enablement are separate capabilities.
@@ -77,52 +61,32 @@ impl<'a> Catalog<'a> {
     /// Validate the entire snapshot before any of its records can be used.
     pub fn parse(text: &'a str) -> Result<Self, Error> {
         let fail = |line, message| Error { line, message };
-        if text.len() > MAX_BYTES {
-            return Err(fail(0, "catalog exceeds byte limit"));
-        }
-        let mut previous: Option<Entry> = None;
-        let mut count = 0;
+        records::validate(text)?;
         for (line, record) in lines(text) {
-            count += 1;
-            if count > MAX_ENTRIES {
-                return Err(fail(line, "catalog exceeds entry limit"));
-            }
-            let entry = parse_entry(record).map_err(|message| fail(line, message))?;
-            if let Some(prev) = previous {
-                if (entry.device, entry.subsystem) <= (prev.device, prev.subsystem) {
-                    return Err(fail(line, "duplicate or unsorted identity"));
-                }
-                if entry.device == prev.device {
-                    if prev.subsystem.is_none() || entry.subsystem.is_none() {
-                        return Err(fail(line, "wildcard overlaps a subsystem identity"));
-                    }
-                    if entry.properties.chip.name != prev.properties.chip.name {
-                        return Err(fail(line, "conflicting chip profiles for one device ID"));
-                    }
-                }
-            }
-            if let Some(chip) = super::chip_for(entry.device) {
-                if chip.name != entry.properties.chip.name {
-                    return Err(fail(line, "entry conflicts with a built-in chip range"));
-                }
-            }
+            let entry = parse_entry(record).expect("validated catalog record");
             for (_, record) in lines(BUILTIN) {
                 let builtin = parse_entry(record).expect("bundled catalog record");
                 if entry.device == builtin.device
-                    && (entry.subsystem.is_none()
-                        || builtin.subsystem.is_none()
-                        || entry.subsystem == builtin.subsystem)
                     && (entry.properties.chip.name != builtin.properties.chip.name
-                        || entry.properties.attachment != builtin.properties.attachment)
+                        || ((entry.subsystem.is_none()
+                            || builtin.subsystem.is_none()
+                            || entry.subsystem == builtin.subsystem)
+                            && entry.properties.attachment != builtin.properties.attachment))
                 {
                     return Err(fail(line, "entry conflicts with a built-in identity"));
                 }
             }
-            previous = Some(entry);
         }
         Ok(Self {
             text,
             extension: true,
+        })
+    }
+
+    pub(super) fn lookup_chip(self, device: u16) -> Option<&'static Chip> {
+        lines(self.text).find_map(|(_, record)| {
+            let entry = parse_entry(record).expect("validated catalog record");
+            (entry.device == device).then_some(entry.properties.chip)
         })
     }
 
@@ -153,60 +117,10 @@ impl<'a> Catalog<'a> {
     }
 }
 
-#[derive(Clone, Copy)]
-struct Entry {
-    device: u16,
-    subsystem: Option<u16>,
-    properties: Properties,
-}
-
-fn lines(text: &str) -> impl Iterator<Item = (usize, &str)> {
-    text.lines().enumerate().filter_map(|(line, text)| {
-        let text = text.trim_ascii();
-        (!text.is_empty() && !text.starts_with('#')).then_some((line + 1, text))
-    })
-}
-
-fn parse_entry(text: &str) -> Result<Entry, &'static str> {
-    let mut fields = text.split_ascii_whitespace();
-    let device = hex_id(fields.next())?;
-    let subsystem = match fields.next() {
-        Some("*") => None,
-        value => Some(hex_id(value)?),
-    };
-    let name = fields.next().ok_or("missing chip profile")?;
-    let chip = CHIPS
-        .iter()
-        .find(|chip| chip.name == name)
-        .ok_or("unknown chip profile")?;
-    let attachment = match fields.next() {
-        Some("pcie") => Attachment::Pcie,
-        Some("sxm") => Attachment::Sxm,
-        Some("coherent") => Attachment::Coherent,
-        _ => return Err("invalid attachment"),
-    };
-    if fields.next().is_some() {
-        return Err("extra record fields");
-    }
-    Ok(Entry {
-        device,
-        subsystem,
-        properties: Properties { chip, attachment },
-    })
-}
-
-fn hex_id(value: Option<&str>) -> Result<u16, &'static str> {
-    let value = value.ok_or("missing PCI identity")?;
-    let value = value.strip_prefix("0x").unwrap_or(value);
-    if value.len() != 4 || !value.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return Err("PCI identity must contain four hexadecimal digits");
-    }
-    u16::from_str_radix(value, 16).map_err(|_| "invalid PCI identity")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::gpu::CHIPS;
     use rstest::rstest;
 
     #[test]
@@ -246,6 +160,7 @@ mod tests {
             "# synthetic identities for this test\n0x0001 * GH100 coherent\nffff 1234 GR100 coherent\n",
         ).unwrap();
         assert_eq!(catalog.lookup(1, 0).unwrap().chip.name, "GH100");
+        assert_eq!(catalog.lookup_chip(1).unwrap().name, "GH100");
         assert!(catalog.may_be_coherent(1));
         assert!(!catalog.lookup(1, 0).unwrap().in_band_cc_supported());
         assert!(catalog

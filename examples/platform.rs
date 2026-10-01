@@ -7,6 +7,7 @@ use pcilibs_rs::{
 };
 
 fn main() -> std::io::Result<()> {
+    // Accept one file or a directory of .catalog files, e.g. /etc/pcilibs/gpus.d.
     let extension = std::env::args_os()
         .nth(1)
         .map(|path| CatalogFile::read(std::path::Path::new(&path)))
