@@ -70,12 +70,11 @@ Parsing and lookup are allocation-free and available with `default-features = fa
 Linux callers can load a bounded file with `gpu::catalog::CatalogFile::read`.
 Neither path downloads data or changes a process-global catalog.
 
-The format has a version and a caller-assigned revision, followed by device ID,
-subsystem device ID, existing chip profile, and attachment. For example, this
+Each record contains a device ID, subsystem device ID, existing chip profile,
+and attachment. There is no header line. For example, this
 **already bundled** identity illustrates the format:
 
 ```text
-pcilibs-nvidia-gpus 1 deployment-2026-09-30
 3041 221a GR100 coherent
 ```
 
@@ -89,8 +88,8 @@ PCI or VFIO driver database.
 
 Unlisted identities keep their built-in mappings. Conflicts with built-in
 identities or chip ranges, duplicate/overlapping extension records, unknown chip
-profiles, malformed fields, and unsupported format versions are errors. Identical
-built-in records are accepted so an extension survives a library update that
+profiles, and malformed fields are errors. Identical built-in records are
+accepted so an extension survives a library update that
 incorporates those IDs. Files are limited to 64 KiB and 1,024 extension records.
 A missing or invalid requested file is an error, never an implicit fallback.
 
@@ -100,16 +99,15 @@ use pcilibs_rs::{gpu::catalog::CatalogFile, platform, Sysfs};
 let extension = CatalogFile::read(std::path::Path::new("/etc/pcilibs/gpus.catalog"))?;
 let catalog = extension.catalog();
 let detected = platform::discover_with_catalog(&Sysfs::default(), catalog)?;
-println!("extension={} platform={:?}", catalog.revision(), detected.platform);
+println!("platform={:?}", detected.platform);
 # Ok::<(), std::io::Error>(())
 ```
 
 Pure callers use `platform::classify_with_catalog`; CC consumers use
 `cc::Gpu::open_in_with_catalog` to apply the same exact mapping before BAR access.
 Existing discovery/opening APIs continue using built-in knowledge. Keep the
-loaded file alive for its borrowed catalog; replace it explicitly between runs
-and record both the built-in and extension revisions. The example accepts an
-optional extension path: `cargo run --example platform -- /path/to/gpus.catalog`.
+loaded file alive for its borrowed catalog; replace it explicitly between runs.
+The example accepts an optional extension path: `cargo run --example platform -- /path/to/gpus.catalog`.
 
 Catalogs are trusted hardware configuration: an incorrect new mapping can select
 the wrong existing register profile. They cannot supply registers, firmware

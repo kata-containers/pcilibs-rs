@@ -52,16 +52,10 @@ mod tests {
     #[rstest]
     fn loaded_extension_is_a_snapshot(directory: TempDir) {
         let path = directory.path().join("gpus.catalog");
-        std::fs::write(
-            &path,
-            "pcilibs-nvidia-gpus 1 first\nffff * GR100 coherent\n",
-        )
-        .unwrap();
+        std::fs::write(&path, "ffff * GR100 coherent\n").unwrap();
         let first = CatalogFile::read(&path).unwrap();
-        std::fs::write(&path, "pcilibs-nvidia-gpus 1 second\nffff * GH100 sxm\n").unwrap();
+        std::fs::write(&path, "ffff * GH100 sxm\n").unwrap();
         let second = CatalogFile::read(&path).unwrap();
-        assert_eq!(first.catalog().revision(), "first");
-        assert_eq!(second.catalog().revision(), "second");
         assert_eq!(
             first.catalog().lookup(0xffff, 0).unwrap().chip.name,
             "GR100"
@@ -101,7 +95,7 @@ mod tests {
         std::fs::write(&path, &oversized).unwrap();
         let error = CatalogFile::read(&path).unwrap_err();
         assert!(error.to_string().contains("byte limit"));
-        let mut text = String::from("pcilibs-nvidia-gpus 1 test\n");
+        let mut text = String::new();
         for device in 0..=super::super::MAX_ENTRIES {
             text.push_str(&format!("{device:04x} * GR100 sxm\n"));
         }

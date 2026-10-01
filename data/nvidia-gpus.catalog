@@ -2,7 +2,6 @@
 # SPDX-License-Identifier: MIT
 # Source: gpu-admin-tools/gpu/devid_properties.py and gpu/devid_chips.py
 # Device and subsystem IDs are hexadecimal; * matches every subsystem device.
-pcilibs-nvidia-gpus 1 gpu-admin-tools@44f261a7ebff96559488230b420e4a3035b30d58
 2321 1839 GH100 pcie
 2322 17a4 GH100 pcie
 2324 17a6 GH100 sxm

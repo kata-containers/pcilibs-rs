@@ -248,10 +248,7 @@ impl Gpu {
         let subsystem = u16::try_from(attr_hex(&path, "subsystem_device")?)
             .context("subsystem device ID exceeds 16 bits")?;
         let properties = catalog.lookup(device, subsystem).with_context(|| {
-            format!(
-                "{bdf}: {device:04x}:{subsystem:04x} is absent from GPU catalog {}",
-                catalog.revision()
-            )
+            format!("{bdf}: {device:04x}:{subsystem:04x} is absent from GPU catalog")
         })?;
         let pci = PciDev::open_in(sysfs, bdf)?;
         ensure!(
@@ -871,24 +868,9 @@ mod tests {
     }
 
     #[rstest]
-    #[case::coherent_rubin(
-        "pcilibs-nvidia-gpus 1 test\nffff 1234 GR100 coherent",
-        "GR100",
-        true,
-        true
-    )]
-    #[case::coherent_hopper(
-        "pcilibs-nvidia-gpus 1 test\nffff 1234 GH100 coherent",
-        "GH100",
-        true,
-        false
-    )]
-    #[case::sxm_blackwell(
-        "pcilibs-nvidia-gpus 1 test\nffff 1234 GB100 sxm",
-        "GB100",
-        false,
-        false
-    )]
+    #[case::coherent_rubin("ffff 1234 GR100 coherent", "GR100", true, true)]
+    #[case::coherent_hopper("ffff 1234 GH100 coherent", "GH100", true, false)]
+    #[case::sxm_blackwell("ffff 1234 GB100 sxm", "GB100", false, false)]
     fn catalog_open_uses_the_verified_profile_and_attachment(
         fake: Fake,
         #[case] text: &str,
@@ -908,7 +890,7 @@ mod tests {
     #[rstest]
     #[case::wrong_vendor(0x8086, GPU_CLASS, "0x1234", "not NVIDIA")]
     #[case::wrong_class(0x10de, NVSWITCH_CLASS, "0x1234", "not a GPU")]
-    #[case::unmapped_subsystem(0x10de, GPU_CLASS, "0x1235", "absent from GPU catalog test")]
+    #[case::unmapped_subsystem(0x10de, GPU_CLASS, "0x1235", "absent from GPU catalog")]
     #[case::invalid_subsystem(0x10de, GPU_CLASS, "0x10000", "exceeds 16 bits")]
     fn catalog_refuses_unknown_hardware_before_bar_access(
         fake: Fake,
@@ -919,10 +901,7 @@ mod tests {
     ) {
         fake.add_pci_device(BDF, vendor, 0xffff, class, None);
         std::fs::write(fake.device(BDF).join("subsystem_device"), subsystem).unwrap();
-        let catalog = crate::gpu::catalog::Catalog::parse(
-            "pcilibs-nvidia-gpus 1 test\nffff 1234 GR100 coherent",
-        )
-        .unwrap();
+        let catalog = crate::gpu::catalog::Catalog::parse("ffff 1234 GR100 coherent").unwrap();
         let error = why(Gpu::open_in_with_catalog(&fake.sysfs, BDF, catalog));
         assert!(error.contains(expected), "{error}");
         assert!(!fake.device(BDF).join("resource0").exists());
@@ -931,10 +910,7 @@ mod tests {
     #[rstest]
     fn catalog_open_preserves_builtin_subsystem_distinctions(fake: Fake) {
         fake.add_mappable_device(BDF, 0x10de, 0x29bc, GPU_CLASS, BAR0_LEN);
-        let catalog = crate::gpu::catalog::Catalog::parse(
-            "pcilibs-nvidia-gpus 1 test\nffff * GR100 coherent",
-        )
-        .unwrap();
+        let catalog = crate::gpu::catalog::Catalog::parse("ffff * GR100 coherent").unwrap();
         for (subsystem, coherent) in [("0x1985", false), ("0x2045", true)] {
             std::fs::write(fake.device(BDF).join("subsystem_device"), subsystem).unwrap();
             let gpu = Gpu::open_in_with_catalog(&fake.sysfs, BDF, catalog).unwrap();

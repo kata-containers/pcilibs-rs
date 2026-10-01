@@ -3,16 +3,16 @@
 
 //! NVIDIA GPU identity extensions, independent of the library release.
 //!
-//! The first non-comment line is `pcilibs-nvidia-gpus 1 REVISION`. Records are
-//! `DEVICE SUBSYSTEM_DEVICE CHIP ATTACHMENT`, sorted by numeric device/subsystem
-//! ID. IDs are four hexadecimal digits (optional `0x`); subsystem `*` explicitly
-//! covers every variant. Attachments are `pcie`, `sxm`, or `coherent`. Chip names
+//! Each record is `DEVICE SUBSYSTEM_DEVICE CHIP ATTACHMENT`, sorted by numeric
+//! device/subsystem ID. IDs are four hexadecimal digits (optional `0x`);
+//! subsystem `*` explicitly covers every variant. Attachments are `pcie`, `sxm`, or `coherent`. Chip names
 //! must name an existing [`super::CHIPS`] profile. Blank lines and whole-line
 //! `#` comments are allowed. Wildcards cannot overlap exact records.
 //!
 //! External records extend the bundled mappings. Conflicting built-in facts are
 //! rejected; identical records remain valid after a library update incorporates
 //! them. Identities absent from both catalogs stay unknown.
+//! Empty or comment-only extensions add no mappings.
 //! Parsing and lookup borrow the input and require neither `std` nor allocation.
 
 use core::fmt;
@@ -80,25 +80,9 @@ impl<'a> Catalog<'a> {
         if text.len() > MAX_BYTES {
             return Err(fail(0, "catalog exceeds byte limit"));
         }
-        let mut lines = lines(text);
-        let (line, header) = lines.next().ok_or(fail(0, "missing header"))?;
-        let mut fields = header.split_ascii_whitespace();
-        if fields.next() != Some("pcilibs-nvidia-gpus") || fields.next() != Some("1") {
-            return Err(fail(line, "unsupported catalog format or version"));
-        }
-        let revision = fields.next().unwrap_or("");
-        if revision.is_empty()
-            || revision.len() > 128
-            || !revision
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b"._-@/".contains(&b))
-            || fields.next().is_some()
-        {
-            return Err(fail(line, "invalid revision or extra header fields"));
-        }
         let mut previous: Option<Entry> = None;
         let mut count = 0;
-        for (line, record) in lines {
+        for (line, record) in lines(text) {
             count += 1;
             if count > MAX_ENTRIES {
                 return Err(fail(line, "catalog exceeds entry limit"));
@@ -122,7 +106,7 @@ impl<'a> Catalog<'a> {
                     return Err(fail(line, "entry conflicts with a built-in chip range"));
                 }
             }
-            for (_, record) in self::lines(BUILTIN).skip(1) {
+            for (_, record) in lines(BUILTIN) {
                 let builtin = parse_entry(record).expect("bundled catalog record");
                 if entry.device == builtin.device
                     && (entry.subsystem.is_none()
@@ -142,16 +126,9 @@ impl<'a> Catalog<'a> {
         })
     }
 
-    pub fn revision(self) -> &'a str {
-        lines(self.text)
-            .next()
-            .and_then(|(_, header)| header.split_ascii_whitespace().nth(2))
-            .expect("validated catalog header")
-    }
-
     /// Device-only callers cannot distinguish coherent and non-coherent variants.
     pub fn may_be_coherent(self, device: u16) -> bool {
-        lines(self.text).skip(1).any(|(_, record)| {
+        lines(self.text).any(|(_, record)| {
             let entry = parse_entry(record).expect("validated catalog record");
             entry.device == device && entry.properties.attachment == Attachment::Coherent
         }) || (self.extension && Catalog::builtin().may_be_coherent(device))
@@ -159,7 +136,7 @@ impl<'a> Catalog<'a> {
 
     /// NVIDIA vendor and GPU class must be established by the caller.
     pub fn lookup(self, device: u16, subsystem_device: u16) -> Option<Properties> {
-        for (_, record) in lines(self.text).skip(1) {
+        for (_, record) in lines(self.text) {
             let entry = parse_entry(record).expect("validated catalog record");
             if entry.device > device {
                 break;
@@ -235,7 +212,14 @@ mod tests {
     #[test]
     fn bundled_snapshot_is_valid_and_preserves_aliased_variants() {
         let catalog = Catalog::parse(BUILTIN).unwrap();
-        assert_eq!(catalog.revision(), Catalog::builtin().revision());
+        assert_eq!(
+            Catalog::builtin()
+                .lookup(0x2321, 0x1839)
+                .unwrap()
+                .attachment,
+            Attachment::Pcie
+        );
+        assert!(Catalog::parse("2321 1839 GH100 coherent").is_err());
         assert_eq!(
             catalog.lookup(0x29bc, 0x1985).unwrap().attachment,
             Attachment::Sxm
@@ -259,10 +243,10 @@ mod tests {
     #[test]
     fn new_ids_extend_builtin_profiles_without_compiled_ranges() {
         let catalog = Catalog::parse(
-            "# synthetic identities for this test\npcilibs-nvidia-gpus 1 test@2\n0x0001 * GH100 coherent\nffff 1234 GR100 coherent\n",
+            "# synthetic identities for this test\n0x0001 * GH100 coherent\nffff 1234 GR100 coherent\n",
         ).unwrap();
-        assert_eq!(catalog.revision(), "test@2");
         assert_eq!(catalog.lookup(1, 0).unwrap().chip.name, "GH100");
+        assert!(catalog.may_be_coherent(1));
         assert!(!catalog.lookup(1, 0).unwrap().in_band_cc_supported());
         assert!(catalog
             .lookup(0xffff, 0x1234)
@@ -278,11 +262,11 @@ mod tests {
     }
 
     #[rstest]
-    #[case::hopper_coherent("pcilibs-nvidia-gpus 1 test\n0001 * GH100 coherent", false)]
-    #[case::blackwell_coherent("pcilibs-nvidia-gpus 1 test\n0001 * GB100 coherent", false)]
-    #[case::rubin_coherent("pcilibs-nvidia-gpus 1 test\n0001 * GR100 coherent", true)]
-    #[case::blackwell_sxm("pcilibs-nvidia-gpus 1 test\n0001 * GB100 sxm", true)]
-    #[case::hopper_pcie("pcilibs-nvidia-gpus 1 test\n0001 * GH100 pcie", true)]
+    #[case::hopper_coherent("0001 * GH100 coherent", false)]
+    #[case::blackwell_coherent("0001 * GB100 coherent", false)]
+    #[case::rubin_coherent("0001 * GR100 coherent", true)]
+    #[case::blackwell_sxm("0001 * GB100 sxm", true)]
+    #[case::hopper_pcie("0001 * GH100 pcie", true)]
     fn attachment_does_not_imply_cc_capability(#[case] text: &str, #[case] supported: bool) {
         assert_eq!(
             Catalog::parse(text)
@@ -295,52 +279,47 @@ mod tests {
     }
 
     #[rstest]
-    #[case::empty("", 0)]
-    #[case::comments("# nothing\n\n", 0)]
-    #[case::version("pcilibs-nvidia-gpus 2 test", 1)]
-    #[case::format("wrong 1 test", 1)]
-    #[case::missing_revision("pcilibs-nvidia-gpus 1", 1)]
-    #[case::invalid_revision("pcilibs-nvidia-gpus 1 bad!", 1)]
-    #[case::extra_header("pcilibs-nvidia-gpus 1 test extra", 1)]
-    #[case::builtin_attachment_conflict("pcilibs-nvidia-gpus 1 test\n3041 221a GR100 pcie", 2)]
-    #[case::builtin_wildcard_conflict("pcilibs-nvidia-gpus 1 test\n29bc * GB102 coherent", 2)]
-    #[case::builtin_chip_conflict("pcilibs-nvidia-gpus 1 test\n3043 * GH100 coherent", 2)]
-    #[case::missing_identity("pcilibs-nvidia-gpus 1 test\n0001", 2)]
-    #[case::wide_id("pcilibs-nvidia-gpus 1 test\n10000 * GR100 sxm", 2)]
-    #[case::bad_hex("pcilibs-nvidia-gpus 1 test\nzzzz * GR100 sxm", 2)]
-    #[case::short_hex("pcilibs-nvidia-gpus 1 test\n001 * GR100 sxm", 2)]
-    #[case::bad_subsystem("pcilibs-nvidia-gpus 1 test\n0001 xxxx GR100 sxm", 2)]
-    #[case::missing_chip("pcilibs-nvidia-gpus 1 test\n0001 *", 2)]
-    #[case::unknown_chip("pcilibs-nvidia-gpus 1 test\n0001 * FUTURE sxm", 2)]
-    #[case::bad_attachment("pcilibs-nvidia-gpus 1 test\n0001 * GR100 unknown", 2)]
-    #[case::missing_attachment("pcilibs-nvidia-gpus 1 test\n0001 * GR100", 2)]
-    #[case::extra_field("pcilibs-nvidia-gpus 1 test\n0001 * GR100 sxm extra", 2)]
-    #[case::duplicate("pcilibs-nvidia-gpus 1 test\n0001 * GR100 sxm\n0001 * GR100 sxm", 3)]
-    #[case::duplicate_conflict(
-        "pcilibs-nvidia-gpus 1 test\n0001 0001 GR100 sxm\n0001 0001 GR100 coherent",
-        3
-    )]
-    #[case::unsorted("pcilibs-nvidia-gpus 1 test\n0002 * GR100 sxm\n0001 * GR100 sxm", 3)]
-    #[case::wildcard_overlap(
-        "pcilibs-nvidia-gpus 1 test\n0001 * GR100 sxm\n0001 0001 GR100 coherent",
-        3
-    )]
-    #[case::conflicting_chip(
-        "pcilibs-nvidia-gpus 1 test\n0001 0001 GR100 sxm\n0001 0002 GH100 sxm",
-        3
-    )]
+    #[case::builtin_attachment_conflict("3041 221a GR100 pcie", 1)]
+    #[case::builtin_wildcard_conflict("29bc * GB102 coherent", 1)]
+    #[case::builtin_chip_conflict("3043 * GH100 coherent", 1)]
+    #[case::missing_identity("0001", 1)]
+    #[case::wide_id("10000 * GR100 sxm", 1)]
+    #[case::bad_hex("zzzz * GR100 sxm", 1)]
+    #[case::short_hex("001 * GR100 sxm", 1)]
+    #[case::bad_subsystem("0001 xxxx GR100 sxm", 1)]
+    #[case::missing_chip("0001 *", 1)]
+    #[case::unknown_chip("0001 * FUTURE sxm", 1)]
+    #[case::bad_attachment("0001 * GR100 unknown", 1)]
+    #[case::missing_attachment("0001 * GR100", 1)]
+    #[case::extra_field("0001 * GR100 sxm extra", 1)]
+    #[case::duplicate("0001 * GR100 sxm\n0001 * GR100 sxm", 2)]
+    #[case::duplicate_conflict("0001 0001 GR100 sxm\n0001 0001 GR100 coherent", 2)]
+    #[case::unsorted("0002 * GR100 sxm\n0001 * GR100 sxm", 2)]
+    #[case::wildcard_overlap("0001 * GR100 sxm\n0001 0001 GR100 coherent", 2)]
+    #[case::conflicting_chip("0001 0001 GR100 sxm\n0001 0002 GH100 sxm", 2)]
+    #[case::comments_before_error("# comment\n\ninvalid", 3)]
     fn rejects_invalid_snapshots(#[case] text: &str, #[case] line: usize) {
         let error = Catalog::parse(text).unwrap_err();
         assert_eq!(error.line, line);
         assert!(!error.message.is_empty());
     }
 
+    #[rstest]
+    #[case::empty("")]
+    #[case::comments("# no extensions\n\n")]
+    fn empty_extensions_preserve_builtin_mappings(#[case] text: &str) {
+        let catalog = Catalog::parse(text).unwrap();
+        assert_eq!(
+            catalog.lookup(0x2321, 0x1839).unwrap().attachment,
+            Attachment::Pcie
+        );
+        assert!(catalog.may_be_coherent(0x3041));
+        assert!(catalog.lookup(0xffff, 0).is_none());
+    }
+
     #[test]
     fn whitespace_comments_and_hex_case_are_unambiguous() {
-        let catalog = Catalog::parse(
-            "\r\n # comment\r\n pcilibs-nvidia-gpus\t1 test\r\n\n 00FF\t0xABCD GR100 sxm\r\n",
-        )
-        .unwrap();
+        let catalog = Catalog::parse("\r\n # comment\r\n\n 00FF\t0xABCD GR100 sxm\r\n").unwrap();
         assert_eq!(
             catalog.lookup(0xff, 0xabcd).unwrap().attachment,
             Attachment::Sxm
@@ -348,8 +327,7 @@ mod tests {
     }
     #[test]
     fn extensions_remain_valid_when_the_library_learns_the_same_identity() {
-        let catalog =
-            Catalog::parse("pcilibs-nvidia-gpus 1 test\n3041 221a GR100 coherent\n").unwrap();
+        let catalog = Catalog::parse("3041 221a GR100 coherent\n").unwrap();
         assert_eq!(
             catalog.lookup(0x3041, 0x221a).unwrap().attachment,
             Attachment::Coherent
@@ -358,13 +336,12 @@ mod tests {
             catalog.lookup(0x29bc, 0x1985).unwrap().attachment,
             Attachment::Sxm
         );
-        let empty = Catalog::parse("pcilibs-nvidia-gpus 1 empty\n# no extensions\n").unwrap();
+        let empty = Catalog::parse("# no extensions\n").unwrap();
         assert_eq!(
             empty.lookup(0x3041, 0x221a).unwrap().attachment,
             Attachment::Coherent
         );
-        let wildcard =
-            Catalog::parse("pcilibs-nvidia-gpus 1 verified\n3041 * GR100 coherent\n").unwrap();
+        let wildcard = Catalog::parse("3041 * GR100 coherent\n").unwrap();
         assert_eq!(
             wildcard.lookup(0x3041, 0xffff).unwrap().attachment,
             Attachment::Coherent

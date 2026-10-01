@@ -287,7 +287,7 @@ mod tests {
 
     #[test]
     fn extension_classifies_new_devices_and_keeps_builtins() {
-        let catalog = Catalog::parse("pcilibs-nvidia-gpus 1 test\nffff * GR100 sxm\n").unwrap();
+        let catalog = Catalog::parse("ffff * GR100 sxm\n").unwrap();
         assert_eq!(
             classify_with_catalog([gpu(0xffff, 0)], FabricInterface::ConnectX, catalog).kind,
             Kind::HgxRx00

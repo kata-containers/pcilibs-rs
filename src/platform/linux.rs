@@ -236,7 +236,7 @@ mod tests {
         fake.add_pci_device(bdf, 0x10de, 0xffff, 0x030200, None);
         fs::write(fake.device(bdf).join("subsystem_device"), "0x1234").unwrap();
         let path = fake.root().join("gpus.catalog");
-        fs::write(&path, "pcilibs-nvidia-gpus 1 test\nffff 1234 GR100 sxm\n").unwrap();
+        fs::write(&path, "ffff 1234 GR100 sxm\n").unwrap();
         let file = crate::gpu::catalog::CatalogFile::read(&path).unwrap();
         assert_eq!(
             discover_with_catalog(&fake.sysfs, file.catalog())
