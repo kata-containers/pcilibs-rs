@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2018-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: MIT
 # Source: gpu-admin-tools/gpu/devid_properties.py and gpu/devid_chips.py
 # Device and subsystem IDs are hexadecimal; * matches every subsystem device.

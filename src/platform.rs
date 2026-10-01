@@ -1,4 +1,4 @@
-// Copyright (c) 2026 NVIDIA CORPORATION
+// Copyright (c) NVIDIA CORPORATION
 // SPDX-License-Identifier: Apache-2.0
 
 //! NVIDIA accelerator platform classification, independent of the system OEM.
