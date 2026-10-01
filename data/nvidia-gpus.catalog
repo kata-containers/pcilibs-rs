@@ -1,7 +1,14 @@
 # SPDX-FileCopyrightText: Copyright (c) NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: MIT
 # Source: gpu-admin-tools/gpu/devid_properties.py and gpu/devid_chips.py
-# Device and subsystem IDs are hexadecimal; * matches every subsystem device.
+#
+# Columns: DEVICE SUBSYSTEM_DEVICE CHIP ATTACHMENT
+# DEVICE: NVIDIA PCI device ID in hexadecimal (vendor 10de is implicit).
+# SUBSYSTEM_DEVICE: PCI subsystem device ID in hexadecimal, or * for all variants.
+# CHIP: supported GPU chip/register profile, e.g. GH100 or GR100 (src/gpu/chips.rs).
+# ATTACHMENT: pcie (PCI Express), sxm (SXM module), or coherent (CPU-GPU C2C).
+# Records are sorted numerically by DEVICE, then SUBSYSTEM_DEVICE.
+#
 2321 1839 GH100 pcie
 2322 17a4 GH100 pcie
 2324 17a6 GH100 sxm
