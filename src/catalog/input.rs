@@ -84,30 +84,30 @@ fn merge(sources: &[(PathBuf, String)]) -> io::Result<String> {
             entries.push((entry, path, line, record));
         }
     }
-    entries.sort_by_key(|(entry, ..)| (entry.device, entry.subsystem));
+    entries.sort_by_key(|(entry, ..)| entry.key());
 
-    let mut previous: Option<(Entry, &Path, usize)> = None;
+    let mut accepted: Vec<(Entry<'_>, &Path, usize)> = Vec::new();
     let mut merged = String::new();
     for (entry, path, line, record) in entries {
-        if let Some((prev, prev_path, prev_line)) = previous {
-            if entry.device == prev.device
-                && entry.subsystem == prev.subsystem
-                && entry.properties.chip.name == prev.properties.chip.name
-                && entry.properties.attachment == prev.properties.attachment
-            {
-                continue;
+        let mut duplicate = false;
+        for &(prev, prev_path, prev_line) in &accepted {
+            if entry.key() == prev.key() && entry.properties == prev.properties {
+                duplicate = true;
+                break;
             }
-            records::check_next(prev, entry).map_err(|message| {
-                invalid(format!(
-                    "{}:{line}: {message}; previous record at {}:{prev_line}",
-                    path.display(),
-                    prev_path.display(),
-                ))
-            })?;
+            if entry.overlaps(prev) {
+                return Err(invalid(format!(
+                    "{}:{line}: overlapping subsystem identities; previous record at {}:{prev_line}",
+                    path.display(), prev_path.display(),
+                )));
+            }
+        }
+        if duplicate {
+            continue;
         }
         merged.push_str(record);
         merged.push('\n');
-        previous = Some((entry, path, line));
+        accepted.push((entry, path, line));
     }
     // Normalizing a missing final newline can add one byte per file.
     records::validate(&merged).map_err(|e| invalid(e.to_string()))?;
@@ -117,23 +117,40 @@ fn merge(sources: &[(PathBuf, String)]) -> io::Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::gpu::{catalog::Catalog, Attachment};
+    use crate::catalog::{Attachment, Catalog, PciIdentity};
     use rstest::rstest;
 
     #[test]
     fn directory_merges_by_identity_and_ignores_unrelated_files() {
         let dir = tempfile::tempdir().unwrap();
-        fs::write(dir.path().join("a.catalog"), "ffff * GR100 coherent").unwrap();
-        fs::write(dir.path().join("z.catalog"), "0001 * GH100 pcie\n").unwrap();
+        fs::write(
+            dir.path().join("a.catalog"),
+            "10de ffff * * gpu GR100 coherent",
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join("z.catalog"),
+            "10de 0001 * * gpu GH100 pcie\n",
+        )
+        .unwrap();
         fs::write(dir.path().join("notes.txt"), "not a catalog").unwrap();
         fs::create_dir(dir.path().join("nested.catalog")).unwrap();
         fs::write(dir.path().join("nested.catalog/bad.catalog"), "invalid").unwrap();
         let text = read(dir.path()).unwrap();
-        assert!(text.starts_with("0001"));
+        assert!(text.starts_with("10de 0001"));
         let catalog = Catalog::parse(&text).unwrap();
-        assert_eq!(catalog.lookup(1, 0).unwrap().attachment, Attachment::Pcie);
         assert_eq!(
-            catalog.lookup(0xffff, 0).unwrap().attachment,
+            catalog
+                .lookup(PciIdentity::new(0x10de, 1, 0x10de, 0))
+                .unwrap()
+                .attachment,
+            Attachment::Pcie
+        );
+        assert_eq!(
+            catalog
+                .lookup(PciIdentity::new(0x10de, 0xffff, 0x10de, 0))
+                .unwrap()
+                .attachment,
             Attachment::Coherent
         );
     }
@@ -141,15 +158,33 @@ mod tests {
     #[test]
     fn identical_records_in_different_files_are_accepted() {
         let dir = tempfile::tempdir().unwrap();
-        fs::write(dir.path().join("a.catalog"), "0001 000a GR100 sxm").unwrap();
-        fs::write(dir.path().join("b.catalog"), "0x0001 0x000A GR100 sxm\n").unwrap();
-        assert_eq!(read(dir.path()).unwrap(), "0001 000a GR100 sxm\n");
+        fs::write(
+            dir.path().join("a.catalog"),
+            "10de 0001 * 000a gpu GR100 sxm",
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join("b.catalog"),
+            "10de 0x0001 * 0x000A gpu GR100 sxm\n",
+        )
+        .unwrap();
+        assert_eq!(
+            read(dir.path()).unwrap(),
+            "10de 0001 * 000a gpu GR100 sxm\n"
+        );
     }
 
     #[rstest]
-    #[case::attachment("0001 0001 GR100 sxm", "0001 0001 GR100 coherent")]
-    #[case::wildcard("0001 * GR100 sxm", "0001 0001 GR100 sxm")]
-    #[case::chip("0001 0001 GR100 sxm", "0001 0002 GH100 sxm")]
+    #[case::attachment(
+        "10de 0001 * 0001 gpu GR100 sxm",
+        "10de 0001 * 0001 gpu GR100 coherent"
+    )]
+    #[case::wildcard("10de 0001 * * gpu GR100 sxm", "10de 0001 * 0001 gpu GR100 sxm")]
+    #[case::profile("10de 0001 * 0001 gpu GR100 sxm", "10de 0001 * 0001 gpu GH100 sxm")]
+    #[case::subsystem_axes(
+        "1234 0001 * 0001 nic FutureNIC pcie\n1234 0001 * 0002 nic FutureNIC pcie",
+        "1234 0001 0001 * nic FutureNIC pcie"
+    )]
     fn conflicts_report_both_files(#[case] first: &str, #[case] second: &str) {
         let dir = tempfile::tempdir().unwrap();
         fs::write(dir.path().join("a.catalog"), first).unwrap();
@@ -162,8 +197,8 @@ mod tests {
 
     #[rstest]
     #[case::malformed("invalid")]
-    #[case::unknown_chip("0001 * FUTURE sxm")]
-    #[case::chip_range("3041 * GH100 coherent")]
+    #[case::invalid_profile("10de 0001 * * gpu bad! sxm")]
+    #[case::invalid_kind("10de 3041 * * invalid GH100 coherent")]
     fn invalid_directory_member_is_an_error(#[case] text: &str) {
         let dir = tempfile::tempdir().unwrap();
         fs::write(dir.path().join("bad.catalog"), text).unwrap();
@@ -183,7 +218,7 @@ mod tests {
             .contains("byte limit"));
         for (name, start, end) in [("a.catalog", 0, 512), ("b.catalog", 512, MAX_ENTRIES + 1)] {
             let text: String = (start..end)
-                .map(|id| format!("{id:04x} * GR100 sxm\n"))
+                .map(|id| format!("10de {id:04x} * * gpu GR100 sxm\n"))
                 .collect();
             fs::write(dir.path().join(name), text).unwrap();
         }

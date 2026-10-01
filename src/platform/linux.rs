@@ -5,9 +5,6 @@ use crate::nvlink::ManagementFunction;
 use crate::{attr_hex, context, failed, normalize_bdf, nvlink, Sysfs};
 use std::{fs, io};
 
-const NVIDIA: u32 = 0x10de;
-const MELLANOX: u32 = 0x15b3;
-
 /// Lists are sorted by canonical BDF so boot-time selection is deterministic.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Topology {
@@ -36,12 +33,12 @@ pub struct DetectedPlatform {
 
 /// Keep family evidence beside the management interface when GPUs are absent.
 pub fn discover(sysfs: &Sysfs) -> io::Result<DetectedPlatform> {
-    discover_with_catalog(sysfs, crate::gpu::catalog::Catalog::builtin())
+    discover_with_catalog(sysfs, crate::catalog::Catalog::builtin())
 }
 
 pub fn discover_with_catalog(
     sysfs: &Sysfs,
-    catalog: crate::gpu::catalog::Catalog<'_>,
+    catalog: crate::catalog::Catalog<'_>,
 ) -> io::Result<DetectedPlatform> {
     let topology = discover_topology(sysfs)?;
     let gpus = topology
@@ -57,10 +54,12 @@ pub fn discover_with_catalog(
                     )
                 })
             };
-            Ok(crate::platform::GpuIdentity {
-                device: read_id("device")?,
-                subsystem_device: read_id("subsystem_device")?,
-            })
+            Ok(crate::platform::GpuIdentity::new(
+                read_id("vendor")?,
+                read_id("device")?,
+                read_id("subsystem_vendor")?,
+                read_id("subsystem_device")?,
+            ))
         })
         .collect::<io::Result<Vec<_>>>()?;
     let platform =
@@ -85,20 +84,18 @@ pub(crate) fn pci_functions(sysfs: &Sysfs) -> io::Result<Vec<PciFunction>> {
         };
         let path = root.join(&bdf);
         let vendor = attr_hex(&path, "vendor")?;
-        if matches!(vendor, NVIDIA | MELLANOX) {
-            functions.push(PciFunction {
-                bdf,
-                vendor,
-                class: attr_hex(&path, "class")?,
-            });
-        }
+        functions.push(PciFunction {
+            bdf,
+            vendor,
+            class: attr_hex(&path, "class")?,
+        });
     }
     functions.sort_by(|a, b| a.bdf.cmp(&b.bdf));
     Ok(functions)
 }
 
 fn is_gpu(function: &PciFunction) -> bool {
-    function.vendor == NVIDIA && matches!(function.class >> 8, 0x0300 | 0x0302)
+    matches!(function.class >> 8, 0x0300 | 0x0302)
 }
 
 /// Init needs GPU BDFs before loading drivers, without BAR or VPD access.
@@ -228,6 +225,18 @@ mod tests {
         );
         assert_eq!(detected.platform.kind, crate::platform::Kind::Unknown);
     }
+
+    #[test]
+    fn gpu_inventory_keeps_other_vendors_without_applying_nvidia_profiles() {
+        let fake = testfs::fake();
+        let bdf = "0000:01:00.0";
+        fake.add_pci_device(bdf, 0x1002, 0x2330, 0x030000, None);
+        fs::write(fake.device(bdf).join("subsystem_device"), "0x16c0").unwrap();
+        assert_eq!(discover_gpus(&fake.sysfs).unwrap(), [bdf]);
+        let result = discover(&fake.sysfs).unwrap();
+        assert_eq!(result.platform.gpu_count, 1);
+        assert_eq!(result.platform.kind, crate::platform::Kind::Unknown);
+    }
     #[test]
     fn loaded_extensions_reach_sysfs_discovery_without_changing_defaults() {
         let fake = testfs::fake();
@@ -236,8 +245,8 @@ mod tests {
         fake.add_pci_device(bdf, 0x10de, 0xffff, 0x030200, None);
         fs::write(fake.device(bdf).join("subsystem_device"), "0x1234").unwrap();
         let path = fake.root().join("gpus.catalog");
-        fs::write(&path, "ffff 1234 GR100 sxm\n").unwrap();
-        let file = crate::gpu::catalog::CatalogFile::read(fake.root()).unwrap();
+        fs::write(&path, "10de ffff * 1234 gpu GR100 sxm\n").unwrap();
+        let file = crate::catalog::CatalogFile::read(fake.root()).unwrap();
         assert_eq!(
             discover_with_catalog(&fake.sysfs, file.catalog())
                 .unwrap()

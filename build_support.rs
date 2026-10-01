@@ -1,3 +1,6 @@
+// Copyright (c) NVIDIA CORPORATION
+// SPDX-License-Identifier: Apache-2.0
+
 use std::env;
 use std::fs;
 use std::io::{BufRead, BufReader, BufWriter, Write};

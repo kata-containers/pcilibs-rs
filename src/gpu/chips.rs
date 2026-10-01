@@ -26,14 +26,6 @@ pub enum Family {
     Rubin,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Attachment {
-    Pcie,
-    Sxm,
-    Coherent,
-    Unknown,
-}
-
 /// One CC-capable GPU generation: a PCI device-id range and the two
 /// per-generation register facts and CC capabilities.
 /// Supporting a new chip is one row.

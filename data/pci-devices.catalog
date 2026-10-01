@@ -1,0 +1,102 @@
+# SPDX-FileCopyrightText: Copyright (c) NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: MIT
+# GPU facts: gpu-admin-tools/gpu/devid_properties.py and gpu/devid_chips.py
+# Mellanox PCI IDs: mstflint/kernel/mst_main.c
+#
+# Columns: VENDOR DEVICE SUBSYSTEM_VENDOR SUBSYSTEM_DEVICE KIND PROFILE ATTACHMENT
+# VENDOR, DEVICE: PCI vendor and device IDs in hexadecimal, both required.
+# SUBSYSTEM_VENDOR, SUBSYSTEM_DEVICE: hexadecimal IDs, or * for all variants.
+# KIND: gpu, nic, switch, bridge, or other.
+# PROFILE: descriptive device/chip name; register support is checked separately.
+# ATTACHMENT: pcie (PCI Express), sxm (SXM), coherent (CPU-GPU C2C), or unknown.
+# Sort numerically by all four identity columns, with * before exact IDs.
+# Filename does not select a vendor. Blank lines and # comments are ignored.
+#
+10de 2321 * 1839 gpu GH100 pcie
+10de 2322 * 17a4 gpu GH100 pcie
+10de 2324 * 17a6 gpu GH100 sxm
+10de 2324 * 17a8 gpu GH100 sxm
+10de 2328 * 1905 gpu GH100 sxm
+10de 2328 * 1906 gpu GH100 sxm
+10de 2329 * 198b gpu GH100 sxm
+10de 2329 * 198c gpu GH100 sxm
+10de 232c * 2063 gpu GH100 sxm
+10de 232c * 2064 gpu GH100 sxm
+10de 2330 * 16c0 gpu GH100 sxm
+10de 2330 * 16c1 gpu GH100 sxm
+10de 2330 * 2044 gpu GH100 sxm
+10de 2330 * 20c1 gpu GH100 sxm
+10de 2331 * 1626 gpu GH100 pcie
+10de 2335 * 18be gpu GH100 sxm
+10de 2335 * 18bf gpu GH100 sxm
+10de 2336 * 16c2 gpu GH100 sxm
+10de 2336 * 16c7 gpu GH100 sxm
+10de 2337 * 16e5 gpu GH100 sxm
+10de 2337 * 16ef gpu GH100 sxm
+10de 2338 * 16f6 gpu GH100 sxm
+10de 2338 * 16f7 gpu GH100 sxm
+10de 2339 * 17d9 gpu GH100 sxm
+10de 2339 * 17fc gpu GH100 sxm
+10de 233a * 183a gpu GH100 pcie
+10de 233b * 1996 gpu GH100 pcie
+10de 233d * 1626 gpu GH100 pcie
+10de 2342 * 16eb gpu GH100 coherent
+10de 2342 * 16ec gpu GH100 coherent
+10de 2342 * 16ed gpu GH100 coherent
+10de 2342 * 1805 gpu GH100 coherent
+10de 2342 * 1809 gpu GH100 coherent
+10de 2342 * 1935 gpu GH100 coherent
+10de 2342 * 1937 gpu GH100 coherent
+10de 2343 * 16ec gpu GH100 coherent
+10de 2345 * 16ed gpu GH100 coherent
+10de 2348 * 18d2 gpu GH100 coherent
+10de 2901 * 1999 gpu GB100 sxm
+10de 2901 * 199b gpu GB100 sxm
+10de 2901 * 199d gpu GB100 sxm
+10de 2901 * 20da gpu GB100 sxm
+10de 2920 * 197f gpu GB100 sxm
+10de 2920 * 20de gpu GB100 sxm
+10de 2924 * 18b6 gpu GB100 pcie
+10de 2924 * 20d4 gpu GB100 pcie
+10de 2925 * 18b7 gpu GB100 pcie
+10de 293d * 18b6 gpu GB100 pcie
+10de 293d * 197f gpu GB100 sxm
+10de 293d * 1999 gpu GB100 sxm
+10de 2941 * 0000 gpu GB100 coherent
+10de 2941 * 2045 gpu GB100 coherent
+10de 2941 * 2046 gpu GB100 coherent
+10de 2941 * 20ca gpu GB100 coherent
+10de 297e * 2046 gpu GB100 coherent
+10de 29bc * 1985 gpu GB102 sxm
+10de 29bc * 1997 gpu GB102 pcie
+10de 29bc * 1998 gpu GB102 pcie
+10de 29bc * 2045 gpu GB102 coherent
+10de 29f1 * 20dc gpu GB102 sxm
+10de 3002 * 2277 gpu GR100 sxm
+10de 3041 * 221a gpu GR100 coherent
+10de 307e * 221a gpu GR100 coherent
+10de 30ff * 221b gpu GR102 coherent
+10de 30ff * 221c gpu GR102 coherent
+10de 3182 * 20e5 gpu GB110 sxm
+10de 3182 * 20e6 gpu GB110 sxm
+10de 3182 * 220c gpu GB110 sxm
+10de 3183 * 22f2 gpu GB110 sxm
+10de 3184 * 22f3 gpu GB110 sxm
+10de 31a1 * 2274 gpu GB110 coherent
+10de 31c2 * 20e5 gpu GB110 sxm
+10de 31c2 * 20e6 gpu GB110 sxm
+10de 31c2 * 21f1 gpu GB110 coherent
+10de 31c3 * 23ab gpu GB110 coherent
+10de 31fe * 20e5 gpu GB110 sxm
+10de 3224 * 215f gpu GB112 sxm
+10de 323e * 215f gpu GB112 sxm
+15b3 101b * * nic ConnectX-6 pcie
+15b3 101d * * nic ConnectX-6-Dx pcie
+15b3 101f * * nic ConnectX-6-Lx pcie
+15b3 1021 * * nic ConnectX-7 pcie
+15b3 1023 * * nic ConnectX-8 pcie
+15b3 1025 * * nic ConnectX-9 pcie
+15b3 cf08 * * switch Switch-IB2 pcie
+15b3 d2f0 * * switch Quantum pcie
+15b3 d2f2 * * switch Quantum-2 pcie
+15b3 d2f4 * * switch Quantum-3 pcie

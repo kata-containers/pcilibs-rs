@@ -13,7 +13,8 @@ pub use linux::{
     discover, discover_gpus, discover_topology, discover_with_catalog, DetectedPlatform, Topology,
 };
 
-use crate::gpu::{catalog::Catalog, Attachment, Family};
+use crate::catalog::Catalog;
+use crate::gpu::{Attachment, Family};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
@@ -45,12 +46,8 @@ impl FabricInterface {
     }
 }
 
-/// Only NVIDIA VGA/3D PCI functions belong in the classifier input.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct GpuIdentity {
-    pub device: u16,
-    pub subsystem_device: u16,
-}
+/// Full PCI identity of a VGA/3D function. Unsupported GPU profiles stay unknown.
+pub type GpuIdentity = crate::catalog::PciIdentity;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Platform {
@@ -76,7 +73,10 @@ pub fn classify_with_catalog(
     let mut gpu_count = 0;
     for gpu in gpus {
         gpu_count += 1;
-        let Some(properties) = catalog.lookup(gpu.device, gpu.subsystem_device) else {
+        let Some(properties) = catalog
+            .lookup(gpu)
+            .and_then(|record| crate::gpu::properties(gpu.vendor, gpu.device, record))
+        else {
             unknown = true;
             continue;
         };
@@ -116,10 +116,7 @@ mod tests {
     use super::*;
 
     fn gpu(device: u16, subsystem_device: u16) -> GpuIdentity {
-        GpuIdentity {
-            device,
-            subsystem_device,
-        }
+        GpuIdentity::new(0x10de, device, 0x10de, subsystem_device)
     }
 
     #[test]
@@ -286,8 +283,16 @@ mod tests {
     }
 
     #[test]
+    fn another_vendors_device_id_cannot_become_an_nvidia_platform() {
+        let identity = GpuIdentity::new(0x1002, 0x2330, 0x10de, 0x16c0);
+        let platform = classify([identity], FabricInterface::DirectNvSwitch);
+        assert_eq!(platform.kind, Kind::Unknown);
+        assert_eq!(platform.gpu_count, 1);
+    }
+
+    #[test]
     fn extension_classifies_new_devices_and_keeps_builtins() {
-        let catalog = Catalog::parse("ffff * GR100 sxm\n").unwrap();
+        let catalog = Catalog::parse("10de ffff * * gpu GR100 sxm\n").unwrap();
         assert_eq!(
             classify_with_catalog([gpu(0xffff, 0)], FabricInterface::ConnectX, catalog).kind,
             Kind::HgxRx00

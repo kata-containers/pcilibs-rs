@@ -1,10 +1,12 @@
 // Copyright (c) Ant Group
+// Copyright (c) NVIDIA CORPORATION
 //
 // SPDX-License-Identifier: Apache-2.0
 //
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
+pub mod catalog;
 pub mod gpu;
 pub mod platform;
 

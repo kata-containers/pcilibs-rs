@@ -3,12 +3,10 @@
 
 // Reuse runtime validation without pulling target-side std dependencies into
 // no_std builds. Build scripts always run on the host.
-#[allow(dead_code)]
-#[path = "src/gpu/chips.rs"]
-mod gpu;
-#[path = "src/gpu/catalog/input.rs"]
+#[path = "src/catalog/input.rs"]
 mod input;
-#[path = "src/gpu/catalog/records.rs"]
+#[allow(dead_code)] // The host validates records but does not perform lookups.
+#[path = "src/catalog/records.rs"]
 mod records;
 
 #[cfg(feature = "std")]
@@ -18,9 +16,9 @@ mod linux;
 fn main() {
     println!("cargo:rerun-if-changed=data");
     let catalog = input::read(std::path::Path::new("data"))
-        .unwrap_or_else(|error| panic!("failed to bundle GPU catalogs: {error}"));
+        .unwrap_or_else(|error| panic!("failed to bundle PCI catalogs: {error}"));
     let output = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
-    std::fs::write(output.join("nvidia-gpus.catalog"), catalog).unwrap();
+    std::fs::write(output.join("pci-devices.catalog"), catalog).unwrap();
 
     #[cfg(feature = "std")]
     linux::generate();

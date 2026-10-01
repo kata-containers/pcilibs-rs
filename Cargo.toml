@@ -7,8 +7,9 @@ authors = ["The Kata Containers community <kata-dev@lists.katacontainers.io>"]
 repository = "https://github.com/kata-containers/pcilibs-rs.git"
 homepage = "https://katacontainers.io/"
 readme = "README.md"
-# src/cc/, src/gpu.rs, src/gpu/chips.rs and src/pci_dev.rs are MIT, carrying NVIDIA's copyright: they are a
-# port of gpu-admin-tools. Everything else is Apache-2.0. Per-file SPDX
+# The gpu-admin-tools port (src/cc/, src/gpu.rs, src/gpu/chips.rs,
+# src/pci_dev.rs and data/pci-devices.catalog) is MIT under NVIDIA's copyright.
+# Everything else is Apache-2.0. Per-file SPDX
 # headers say which is which.
 license = "Apache-2.0 AND MIT"
 edition = "2021"

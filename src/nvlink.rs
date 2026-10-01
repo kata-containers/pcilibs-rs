@@ -1,4 +1,4 @@
-// Copyright (c) 2026 NVIDIA CORPORATION
+// Copyright (c) NVIDIA CORPORATION
 // SPDX-License-Identifier: Apache-2.0
 
 //! Init must identify NVLink hardware before choosing drivers and services.
