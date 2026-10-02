@@ -1,0 +1,107 @@
+# Resolve dependencies before scanning: this library does not commit Cargo.lock.
+name: Scan resolved Cargo dependencies
+
+on:
+  workflow_call:
+    inputs:
+      compare:
+        description: Compare the proposed dependencies against the base revision
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  osv-scan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      security-events: write
+    steps:
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # v1
+        with:
+          toolchain: stable
+
+      - name: Checkout base revision
+        if: ${{ inputs.compare }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          path: source
+          persist-credentials: false
+
+      - name: Resolve base dependencies
+        if: ${{ inputs.compare }}
+        run: cargo generate-lockfile --manifest-path source/Cargo.toml
+
+      - name: Scan base dependencies
+        if: ${{ inputs.compare }}
+        id: scan-old
+        continue-on-error: true
+        uses: google/osv-scanner-action/osv-scanner-action@a345acffa64b0eaede81a3d9aae6141214d9c8fc # v2.6.0
+        with:
+          scan-args: |-
+            --format=json
+            --output-file=old-results.json
+            --lockfile=source/Cargo.lock
+
+      # Keep reports outside source so checkout can clean the generated lockfile.
+      - name: Checkout proposed revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: source
+          persist-credentials: false
+
+      - name: Resolve proposed dependencies
+        run: cargo generate-lockfile --manifest-path source/Cargo.toml
+
+      - name: Scan proposed dependencies
+        id: scan-new
+        continue-on-error: true
+        uses: google/osv-scanner-action/osv-scanner-action@a345acffa64b0eaede81a3d9aae6141214d9c8fc # v2.6.0
+        with:
+          scan-args: |-
+            --format=json
+            --output-file=new-results.json
+            --lockfile=source/Cargo.lock
+
+      # Nonzero scanner exits can mean either vulnerabilities or a broken scan.
+      # Only the reporter decides whether completed scans contain new findings.
+      - name: Check that scans completed
+        env:
+          COMPARE: ${{ inputs.compare }}
+        run: |
+          test -s new-results.json
+          if [ "$COMPARE" = "true" ]; then
+            test -s old-results.json
+          fi
+
+      - name: Report vulnerabilities
+        id: report
+        uses: google/osv-scanner-action/osv-reporter-action@a345acffa64b0eaede81a3d9aae6141214d9c8fc # v2.6.0
+        with:
+          scan-args: |-
+            --output=results.sarif
+            --old=${{ inputs.compare && 'old-results.json' || '' }}
+            --new=new-results.json
+            --gh-annotations=true
+            --fail-on-vuln=true
+
+      - name: Upload scan reports
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: OSV scan reports
+          path: |
+            *-results.json
+            results.sarif
+          retention-days: 5
+
+      - name: Upload to code scanning
+        if: ${{ !cancelled() && hashFiles('results.sarif') != '' }}
+        uses: github/codeql-action/upload-sarif@5595ccaf912efad79be6eef63a5619ff05969be3 # v4.37.6
+        with:
+          sarif_file: results.sarif
