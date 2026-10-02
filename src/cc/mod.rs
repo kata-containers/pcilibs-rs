@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright (c) 2018-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-FileCopyrightText: Copyright (c) NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: MIT
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -147,74 +147,10 @@ fn ppcie_knob_plan(mode: PpcieMode, bar0_decoupler: bool) -> Vec<(u32, u16)> {
     plan
 }
 
-/// One CC-capable GPU generation: a PCI device-id range and the two
-/// per-generation register facts and CC capabilities.
-/// Supporting a new chip is one row.
-pub struct Chip {
-    pub name: &'static str,
-    /// Inclusive PCI device-id range.
-    pub devid: (u16, u16),
-    /// Hopper uses the EMEM RPC channel, extra PRC knobs and a different
-    /// CC-state register; Blackwell and Rubin use MNOC and have a boot
-    /// BAR0 firewall.
-    pub hopper: bool,
-    /// Whether in-band CC enablement is supported on coherent variants.
-    /// gpu-admin-tools v2026.09.29 `nvidia_gpu_tools.py::Gpu.__init__`
-    /// restricts C2C enablement on Hopper and Blackwell only.
-    pub c2c_cc_supported: bool,
-    /// NV_THERM_I2CS_SCRATCH_FSP_BOOT_COMPLETE: reads 0xff once the FSP
-    /// has finished booting the GPU.
-    pub boot_complete: u32,
-}
-
-/// Device-id ranges from gpu-admin-tools (`gpu/devid_chips.py`).
-#[rustfmt::skip]
-pub const CHIPS: &[Chip] = &[
-    Chip { name: "GH100", devid: (0x22f0, 0x237f), hopper: true, c2c_cc_supported: false, boot_complete: 0x200bc },
-    Chip { name: "GB100", devid: (0x2900, 0x297f), hopper: false, c2c_cc_supported: false, boot_complete: 0x200bc },
-    Chip { name: "GB102", devid: (0x2980, 0x29ff), hopper: false, c2c_cc_supported: false, boot_complete: 0x200bc },
-    Chip { name: "GB110", devid: (0x3180, 0x31ff), hopper: false, c2c_cc_supported: false, boot_complete: 0x200bc },
-    Chip { name: "GB112", devid: (0x3200, 0x327f), hopper: false, c2c_cc_supported: false, boot_complete: 0x200bc },
-    Chip { name: "GB202", devid: (0x2b80, 0x2bff), hopper: false, c2c_cc_supported: false, boot_complete: 0xad00bc },
-    Chip { name: "GB203", devid: (0x2c00, 0x2c7f), hopper: false, c2c_cc_supported: false, boot_complete: 0xad00bc },
-    Chip { name: "GB205", devid: (0x2f00, 0x2f7f), hopper: false, c2c_cc_supported: false, boot_complete: 0xad00bc },
-    Chip { name: "GB206", devid: (0x2d00, 0x2d7f), hopper: false, c2c_cc_supported: false, boot_complete: 0xad00bc },
-    Chip { name: "GB207", devid: (0x2d80, 0x2dff), hopper: false, c2c_cc_supported: false, boot_complete: 0xad00bc },
-    // gpu-admin-tools v2026.09.29 (44f261a7): gpu/devid_chips.py;
-    // gpu/regs/gr100/therm.py and gr102/therm.py import the GB202 boot register.
-    Chip { name: "GR100", devid: (0x3000, 0x307f), hopper: false, c2c_cc_supported: true, boot_complete: 0xad00bc },
-    Chip { name: "GR102", devid: (0x3080, 0x30ff), hopper: false, c2c_cc_supported: true, boot_complete: 0xad00bc },
-];
-
-/// Coherently attached devices, independent of in-band CC enablement support.
-///
-/// From gpu-admin-tools' `has_c2c`, which keys on (device, subsystem device)
-/// pairs; only the device half is kept, no subsystem id being read anywhere in
-/// this crate. That over-matches `0x29bc` and `0x31c2`, which have
-/// non-coherent variants — a needless refusal, chosen over mistaking a
-/// coherent GPU for an ordinary one. Rubin remains coherent even though
-/// gpu-admin-tools `Gpu.__init__` permits its in-band CC enablement.
-const C2C_DEVIDS: &[u16] = &[
-    0x2342, 0x2343, 0x2345, 0x2348, // GH200
-    0x2941, 0x297e, 0x29bc, // GB200
-    0x31c2, // GB300
-    0x3041, 0x307e, 0x30ff, // Rubin C2C variants
-];
-
-/// Also the set needing a vfio driver that can map coherent memory. Wider than
-/// that driver's own table: a part can be coherently attached before any
-/// released kernel claims it.
-pub fn is_c2c(devid: u16) -> bool {
-    C2C_DEVIDS.contains(&devid)
-}
-
-pub fn chip_for(devid: u16) -> Option<&'static Chip> {
-    CHIPS
-        .iter()
-        .find(|c| (c.devid.0..=c.devid.1).contains(&devid))
-}
+pub use crate::gpu::{chip_for, is_c2c, Chip, CHIPS};
 
 const NV_PMC_BOOT_0: u32 = 0x0;
+
 /// CC state lives in secure scratch, bits 1:0: 0 off, 1 on, 3 devtools.
 const CC_STATE_HOPPER: u32 = 0x1182cc;
 const CC_STATE_BLACKWELL: u32 = 0x590;
@@ -288,6 +224,50 @@ impl Gpu {
             )
         })?;
         let c2c = is_c2c(pci.device);
+        Self::finish_open(pci, chip, c2c)
+    }
+
+    /// Catalog identities must be validated before BAR access or a runtime-PM wake-up.
+    /// New IDs may reuse existing register profiles; new protocols still need code.
+    pub fn open_in_with_catalog(
+        sysfs: &Sysfs,
+        bdf: &str,
+        catalog: crate::catalog::Catalog<'_>,
+    ) -> Result<Self> {
+        let path = sysfs.device(bdf).context("invalid PCI address")?;
+        ensure!(
+            attr_hex(&path, "vendor")? == 0x10de,
+            "{bdf}: vendor is not NVIDIA"
+        );
+        ensure!(
+            matches!(attr_hex(&path, "class")? >> 8, 0x0300 | 0x0302),
+            "{bdf}: PCI function is not a GPU"
+        );
+        let device =
+            u16::try_from(attr_hex(&path, "device")?).context("device ID exceeds 16 bits")?;
+        let subsystem = u16::try_from(attr_hex(&path, "subsystem_device")?)
+            .context("subsystem device ID exceeds 16 bits")?;
+        let subvendor = u16::try_from(attr_hex(&path, "subsystem_vendor")?)
+            .context("subsystem vendor ID exceeds 16 bits")?;
+        let identity = crate::catalog::PciIdentity::new(0x10de, device, subvendor, subsystem);
+        let record = catalog
+            .lookup(identity)
+            .with_context(|| format!("{bdf}: {identity:?} is absent from PCI catalog"))?;
+        let properties = crate::gpu::properties(identity.vendor, device, record)
+            .with_context(|| format!("{bdf}: unsupported NVIDIA GPU profile {}", record.profile))?;
+        let pci = PciDev::open_in(sysfs, bdf)?;
+        ensure!(
+            pci.vendor == 0x10de && pci.device == device,
+            "{bdf}: PCI identity changed while opening GPU"
+        );
+        Self::finish_open(
+            pci,
+            properties.chip,
+            properties.attachment == crate::gpu::Attachment::Coherent,
+        )
+    }
+
+    fn finish_open(pci: PciDev, chip: &'static Chip, c2c: bool) -> Result<Self> {
         let gpu = Self { pci, chip, c2c };
 
         gpu.wait_for_bar0()?;
@@ -694,19 +674,6 @@ mod tests {
     }
 
     #[test]
-    fn c2c_blocks_enable_only() {
-        assert!(C2C_DEVIDS.contains(&0x2342)); // GH200
-        assert_eq!(chip_for(0x2342).unwrap().name, "GH100");
-    }
-
-    #[test]
-    fn every_c2c_id_is_a_known_chip() {
-        for devid in C2C_DEVIDS {
-            assert!(chip_for(*devid).is_some(), "{devid:#06x} has no chip row");
-        }
-    }
-
-    #[test]
     fn cc_mode_roundtrip() {
         for mode in [CcMode::Off, CcMode::On, CcMode::DevTools] {
             assert_eq!(mode.to_string().parse::<CcMode>().unwrap(), mode);
@@ -903,6 +870,77 @@ mod tests {
         assert_eq!(gpu.chip.name, "GH100");
         assert_eq!((gpu.bdf(), gpu.devid()), (BDF, GH100));
         assert!(!gpu.c2c);
+    }
+
+    #[rstest]
+    #[case::coherent_rubin("10de ffff * 1234 gpu GR100 coherent", "GR100", true, true)]
+    #[case::coherent_hopper("10de ffff * 1234 gpu GH100 coherent", "GH100", true, false)]
+    #[case::sxm_blackwell("10de ffff * 1234 gpu GB100 sxm", "GB100", false, false)]
+    fn catalog_open_uses_the_verified_profile_and_attachment(
+        fake: Fake,
+        #[case] text: &str,
+        #[case] name: &str,
+        #[case] coherent: bool,
+        #[case] coherent_cc: bool,
+    ) {
+        fake.add_mappable_device(BDF, 0x10de, 0xffff, GPU_CLASS, BAR0_LEN);
+        std::fs::write(fake.device(BDF).join("subsystem_device"), "0x1234").unwrap();
+        let catalog = crate::catalog::Catalog::parse(text).unwrap();
+        let gpu = Gpu::open_in_with_catalog(&fake.sysfs, BDF, catalog).unwrap();
+        assert_eq!(gpu.chip.name, name);
+        assert_eq!(gpu.c2c, coherent);
+        assert_eq!(gpu.chip.c2c_cc_supported, coherent_cc);
+    }
+
+    #[rstest]
+    #[case::wrong_vendor(0x8086, GPU_CLASS, "0x1234", "not NVIDIA")]
+    #[case::wrong_class(0x10de, NVSWITCH_CLASS, "0x1234", "not a GPU")]
+    #[case::unmapped_subsystem(0x10de, GPU_CLASS, "0x1235", "absent from PCI catalog")]
+    #[case::invalid_subsystem(0x10de, GPU_CLASS, "0x10000", "exceeds 16 bits")]
+    fn catalog_refuses_unknown_hardware_before_bar_access(
+        fake: Fake,
+        #[case] vendor: u16,
+        #[case] class: u32,
+        #[case] subsystem: &str,
+        #[case] expected: &str,
+    ) {
+        fake.add_pci_device(BDF, vendor, 0xffff, class, None);
+        std::fs::write(fake.device(BDF).join("subsystem_device"), subsystem).unwrap();
+        let catalog =
+            crate::catalog::Catalog::parse("10de ffff * 1234 gpu GR100 coherent").unwrap();
+        let error = why(Gpu::open_in_with_catalog(&fake.sysfs, BDF, catalog));
+        assert!(error.contains(expected), "{error}");
+        assert!(!fake.device(BDF).join("resource0").exists());
+    }
+
+    #[rstest]
+    fn catalog_open_preserves_builtin_subsystem_distinctions(fake: Fake) {
+        fake.add_mappable_device(BDF, 0x10de, 0x29bc, GPU_CLASS, BAR0_LEN);
+        let catalog = crate::catalog::Catalog::parse("10de ffff * * gpu GR100 coherent").unwrap();
+        for (subsystem, coherent) in [("0x1985", false), ("0x2045", true)] {
+            std::fs::write(fake.device(BDF).join("subsystem_device"), subsystem).unwrap();
+            let gpu = Gpu::open_in_with_catalog(&fake.sysfs, BDF, catalog).unwrap();
+            assert_eq!(gpu.c2c, coherent);
+            assert_eq!(gpu.chip.name, "GB102");
+        }
+    }
+
+    #[rstest]
+    #[case::unimplemented_profile(0xffff, "10de ffff * * gpu FutureGPU pcie")]
+    #[case::wrong_kind(0xffff, "10de ffff * * nic GH100 pcie")]
+    #[case::wrong_chip(0x2902, "10de 2902 * * gpu GH100 sxm")]
+    #[case::unknown_attachment(0xffff, "10de ffff * * gpu GH100 unknown")]
+    fn descriptive_profiles_do_not_authorize_bar_access(
+        fake: Fake,
+        #[case] device: u16,
+        #[case] text: &str,
+    ) {
+        fake.add_pci_device(BDF, 0x10de, device, GPU_CLASS, None);
+        std::fs::write(fake.device(BDF).join("subsystem_device"), "0x1234").unwrap();
+        let catalog = crate::catalog::Catalog::parse(text).unwrap();
+        let error = why(Gpu::open_in_with_catalog(&fake.sysfs, BDF, catalog));
+        assert!(error.contains("unsupported NVIDIA GPU profile"), "{error}");
+        assert!(!fake.device(BDF).join("resource0").exists());
     }
 
     #[rstest]

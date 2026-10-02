@@ -1,4 +1,5 @@
-// Copyright (c) 2026 Kata Containers contributors
+// Copyright (c) Kata Containers contributors
+// Copyright (c) NVIDIA CORPORATION
 //
 // SPDX-License-Identifier: Apache-2.0
 
@@ -71,6 +72,7 @@ impl Fake {
 
         let path = self.device(address);
         fs::write(path.join("vendor"), format!("{vendor:#06x}\n")).unwrap();
+        fs::write(path.join("subsystem_vendor"), format!("{vendor:#06x}\n")).unwrap();
         fs::write(path.join("device"), format!("{device:#06x}\n")).unwrap();
         fs::write(path.join("class"), format!("{class:#08x}\n")).unwrap();
         fs::write(path.join("numa_node"), "0\n").unwrap();

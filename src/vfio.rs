@@ -1,4 +1,5 @@
-// Copyright (c) 2026 Kata Containers contributors
+// Copyright (c) Kata Containers contributors
+// Copyright (c) NVIDIA CORPORATION
 //
 // SPDX-License-Identifier: Apache-2.0
 
@@ -13,7 +14,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use crate::{context, failed, Sysfs, DRIVER_VFIO_PCI_TYPE};
+use crate::{context, failed, Sysfs};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Bound {
@@ -121,12 +122,9 @@ pub fn unbind(sysfs: &Sysfs, address: &str) -> io::Result<()> {
 
 /// The vfio module for a device, from the kernel's own alias table.
 ///
-/// A variant driver — `nvgrace_gpu_vfio_pci` on Grace, `mlx5_vfio_pci` —
-/// registers a `vfio_pci:` alias for exactly the devices it supports. Those
-/// aliases are `override_only`: the driver never matches through normal PCI
-/// probing, so nothing but this table says which module a device wants, and
-/// no list of device ids here could stay correct as the kernel adds them.
-/// No alias means plain `vfio-pci`, which takes whatever it is given.
+/// A missing device-specific alias may mean this kernel lacks the required
+/// variant driver. Generic VFIO's catch-all cannot establish compatibility,
+/// so an unmapped device returns [`io::ErrorKind::NotFound`].
 pub fn module_for(modules_alias: &Path, vendor: u16, device: u16) -> io::Result<String> {
     let wanted = format!("vfio_pci:v{vendor:08X}d{device:08X}");
 
@@ -137,7 +135,15 @@ pub fn module_for(modules_alias: &Path, vendor: u16, device: u16) -> io::Result<
         .lines()
         .find(|line| line.contains(&wanted))
         .and_then(|line| line.split_whitespace().next_back())
-        .unwrap_or(DRIVER_VFIO_PCI_TYPE);
+        .ok_or_else(|| {
+            failed(
+                io::ErrorKind::NotFound,
+                format!(
+                    "no device-specific VFIO module alias for {vendor:04x}:{device:04x} in {}",
+                    modules_alias.display()
+                ),
+            )
+        })?;
 
     Ok(module.to_string())
 }
@@ -369,8 +375,6 @@ alias pci:v000010DEd00002330sv*sd*bc*sc*i* nvidia
     #[case::gh200_120gb(0x2342, "nvgrace_gpu_vfio_pci")]
     #[case::gh200_480gb(0x2345, "nvgrace_gpu_vfio_pci")]
     #[case::gb200(0x2941, "nvgrace_gpu_vfio_pci")]
-    #[case::h100_pcie(0x2330, "vfio-pci")]
-    #[case::unknown_to_this_kernel(0xffff, "vfio-pci")]
     fn reads_the_module_out_of_the_alias_table(
         fake: Fake,
         #[case] device: u16,
@@ -387,11 +391,57 @@ alias pci:v000010DEd00002330sv*sd*bc*sc*i* nvidia
     fn the_alias_match_is_on_vendor_and_device(fake: Fake) {
         let aliases = aliases(&fake);
 
-        assert_eq!(module_for(&aliases, 0x8086, 0x2342).unwrap(), "vfio-pci");
+        assert_eq!(
+            module_for(&aliases, 0x8086, 0x2342).unwrap_err().kind(),
+            io::ErrorKind::NotFound
+        );
         assert_eq!(
             module_for(&aliases, 0x15b3, 0x101e).unwrap(),
             "mlx5_vfio_pci"
         );
+    }
+
+    #[rstest]
+    #[case::ordinary_pcie_gpu(0x2330)]
+    #[case::unknown_gpu(0xffff)]
+    #[case::coherent_gpu_missing_from_kernel(0x3041)]
+    fn unmapped_devices_do_not_fall_back_to_generic_vfio(fake: Fake, #[case] device: u16) {
+        let aliases = aliases(&fake);
+
+        let err = module_for(&aliases, 0x10de, device).unwrap_err();
+
+        assert_eq!(err.kind(), io::ErrorKind::NotFound);
+        let message = err.to_string();
+        assert!(message.contains(&format!("10de:{device:04x}")), "{message}");
+        assert!(
+            message.contains(&aliases.display().to_string()),
+            "{message}"
+        );
+    }
+
+    #[rstest]
+    #[case::empty("")]
+    #[case::generic_only("alias vfio_pci:v*d*sv*sd*bc*sc*i* vfio_pci\n")]
+    fn a_table_without_device_mappings_is_not_sufficient(fake: Fake, #[case] table: &str) {
+        let aliases = aliases(&fake);
+        fs::write(&aliases, table).unwrap();
+
+        assert_eq!(
+            module_for(&aliases, 0x10de, 0x2342).unwrap_err().kind(),
+            io::ErrorKind::NotFound
+        );
+    }
+
+    #[rstest]
+    fn an_explicit_generic_vfio_mapping_is_allowed(fake: Fake) {
+        let aliases = aliases(&fake);
+        fs::write(
+            &aliases,
+            "alias vfio_pci:v000010DEd00002330sv*sd*bc*sc*i* vfio_pci\n",
+        )
+        .unwrap();
+
+        assert_eq!(module_for(&aliases, 0x10de, 0x2330).unwrap(), "vfio_pci");
     }
 
     #[rstest]

@@ -1,4 +1,4 @@
-// Copyright (c) 2026 NVIDIA CORPORATION
+// Copyright (c) NVIDIA CORPORATION
 // SPDX-License-Identifier: Apache-2.0
 
 //! Init must identify NVLink hardware before choosing drivers and services.
@@ -27,7 +27,11 @@ use std::io::{self, Read};
 use std::net::Ipv6Addr;
 use std::path::Path;
 
+use crate::platform::linux::{pci_functions, PciFunction};
 use crate::{attr_hex, context, failed, normalize_bdf, Sysfs};
+
+// Preserve the original discovery API for existing callers.
+pub use crate::platform::{discover_gpus, discover_topology as discover, Topology};
 
 const NVIDIA: u32 = 0x10de;
 const MELLANOX: u32 = 0x15b3;
@@ -37,17 +41,6 @@ const MAX_VPD: u64 = 1 << 15;
 const VPD_END: u8 = 0x78;
 const VPD_READ_ONLY: u8 = 0x90;
 const VPD_READ_WRITE: u8 = 0x91;
-
-/// Lists are sorted by canonical BDF so boot-time selection is deterministic.
-#[derive(Debug, Default, PartialEq, Eq)]
-pub struct Topology {
-    /// Include pre-CC GPUs so init policy does not depend on CC support.
-    pub gpus: Vec<String>,
-    /// Bridge class identifies candidates; BAR0 must confirm their generation.
-    pub switches: Vec<String>,
-    /// Include sibling PFs because full-capability PFs may lack the VPD marker.
-    pub management_functions: Vec<ManagementFunction>,
-}
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct ManagementFunction {
@@ -66,51 +59,8 @@ pub struct ManagementPort {
     pub guid: u64,
 }
 
-struct PciFunction {
-    bdf: String,
-    vendor: u32,
-    class: u32,
-}
-
-fn pci_functions(sysfs: &Sysfs) -> io::Result<Vec<PciFunction>> {
-    let root = sysfs.devices();
-    let entries = fs::read_dir(&root).map_err(|e| context(e, root.display()))?;
-    let mut functions = Vec::new();
-    for entry in entries {
-        let entry = entry?;
-        let Some(bdf) = entry.file_name().to_str().and_then(normalize_bdf) else {
-            continue;
-        };
-        let path = root.join(&bdf);
-        let vendor = attr_hex(&path, "vendor")?;
-        if matches!(vendor, NVIDIA | MELLANOX) {
-            functions.push(PciFunction {
-                bdf,
-                vendor,
-                class: attr_hex(&path, "class")?,
-            });
-        }
-    }
-    functions.sort_by(|a, b| a.bdf.cmp(&b.bdf));
-    Ok(functions)
-}
-
-fn is_gpu(function: &PciFunction) -> bool {
-    function.vendor == NVIDIA && matches!(function.class >> 8, 0x0300 | 0x0302)
-}
-
 fn is_switch(function: &PciFunction) -> bool {
     function.vendor == NVIDIA && function.class >> 8 == 0x0680
-}
-
-/// Init needs GPU BDFs before loading drivers, without BAR or VPD access.
-/// Identity errors propagate so a failed scan cannot select CPU-only mode.
-pub fn discover_gpus(sysfs: &Sysfs) -> io::Result<Vec<String>> {
-    Ok(pci_functions(sysfs)?
-        .into_iter()
-        .filter(is_gpu)
-        .map(|device| device.bdf)
-        .collect())
 }
 
 /// H100/H200 expose switches on PCI; ConnectX-managed switches need VPD discovery.
@@ -123,18 +73,16 @@ pub fn discover_switches(sysfs: &Sysfs) -> io::Result<Vec<String>> {
         .collect())
 }
 
-/// Init needs PCI topology before choosing GPU/RDMA drivers.
-/// Missing VPD means no marker; read/parse errors propagate to prevent wrong
-/// init-mode selection. VPD may require root. Firmware/VMs can change PF counts.
-pub fn discover(sysfs: &Sysfs) -> io::Result<Topology> {
-    let mut topology = Topology::default();
+pub(crate) fn discover_fabric(
+    sysfs: &Sysfs,
+    functions: &[PciFunction],
+) -> io::Result<(Vec<String>, Vec<ManagementFunction>)> {
+    let mut switches = Vec::new();
     let mut mellanox = Vec::new();
     let mut management_slots = BTreeSet::new();
-    for function in pci_functions(sysfs)? {
-        if is_gpu(&function) {
-            topology.gpus.push(function.bdf);
-        } else if is_switch(&function) {
-            topology.switches.push(function.bdf);
+    for function in functions {
+        if is_switch(function) {
+            switches.push(function.bdf.clone());
         } else if function.vendor == MELLANOX {
             let device_path = sysfs.devices().join(&function.bdf);
             // A shared slot does not make an SR-IOV VF a management PF.
@@ -149,16 +97,16 @@ pub fn discover(sysfs: &Sysfs) -> io::Result<Topology> {
                 management_slots.insert(slot(&function.bdf).to_owned());
             }
             mellanox.push(ManagementFunction {
-                bdf: function.bdf,
+                bdf: function.bdf.clone(),
                 sw_mng,
             });
         }
     }
-    topology.management_functions = mellanox
+    let management_functions = mellanox
         .into_iter()
         .filter(|function| management_slots.contains(slot(&function.bdf)))
         .collect();
-    Ok(topology)
+    Ok((switches, management_functions))
 }
 
 // Normalization guarantees the function separator.
