@@ -79,7 +79,7 @@ pub fn generate() {
 
         if let Ok((name, id)) = parser::vendor(&line) {
             if let Some(vendor) = curr_vendor.take() {
-                vendors.entry(vendor.id, &quote!(#vendor).to_string());
+                vendors.entry(vendor.id, quote!(#vendor).to_string());
             }
 
             curr_vendor = Some(CgVendor {
@@ -110,7 +110,7 @@ pub fn generate() {
             });
         } else if let Ok((name, id)) = parser::class(&line) {
             if let Some(class) = curr_class.take() {
-                classes.entry(class.id, &quote!(#class).to_string());
+                classes.entry(class.id, quote!(#class).to_string());
             }
 
             curr_class = Some(CgClass {
@@ -143,10 +143,10 @@ pub fn generate() {
         }
     }
     if let Some(vendor) = curr_vendor.take() {
-        vendors.entry(vendor.id, &quote!(#vendor).to_string());
+        vendors.entry(vendor.id, quote!(#vendor).to_string());
     }
     if let Some(class) = curr_class.take() {
-        classes.entry(class.id, &quote!(#class).to_string());
+        classes.entry(class.id, quote!(#class).to_string());
     }
 
     writeln!(
