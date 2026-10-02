@@ -174,7 +174,7 @@ mod parser {
     use nom::character::complete::{hex_digit1, tab};
     use nom::combinator::{all_consuming, map_parser, map_res};
     use nom::sequence::{delimited, separated_pair, terminated};
-    use nom::IResult;
+    use nom::{IResult, Parser};
 
     fn id<T, F>(size: usize, from_str_radix: F) -> impl Fn(&str) -> IResult<&str, T>
     where
@@ -183,40 +183,41 @@ mod parser {
         move |input| {
             map_res(map_parser(take(size), all_consuming(hex_digit1)), |input| {
                 from_str_radix(input, 16)
-            })(input)
+            })
+            .parse(input)
         }
     }
 
     pub fn vendor(input: &str) -> IResult<&str, u16> {
         let id = id(4, u16::from_str_radix);
-        terminated(id, tag("  "))(input)
+        terminated(id, tag("  ")).parse(input)
     }
 
     pub fn device(input: &str) -> IResult<&str, u16> {
         let id = id(4, u16::from_str_radix);
-        delimited(tab, id, tag("  "))(input)
+        delimited(tab, id, tag("  ")).parse(input)
     }
 
     pub fn subsystems(input: &str) -> IResult<&str, (u16, u16)> {
         let subvendor = id(4, u16::from_str_radix);
         let subdevice = id(4, u16::from_str_radix);
         let id = separated_pair(subvendor, tag(" "), subdevice);
-        delimited(tag("\t\t"), id, tag("  "))(input)
+        delimited(tag("\t\t"), id, tag("  ")).parse(input)
     }
 
     pub fn class(input: &str) -> IResult<&str, u8> {
         let id = id(2, u8::from_str_radix);
-        delimited(tag("C "), id, tag("  "))(input)
+        delimited(tag("C "), id, tag("  ")).parse(input)
     }
 
     pub fn subclass(input: &str) -> IResult<&str, u8> {
         let id = id(2, u8::from_str_radix);
-        delimited(tab, id, tag("  "))(input)
+        delimited(tab, id, tag("  ")).parse(input)
     }
 
     pub fn prog_if(input: &str) -> IResult<&str, u8> {
         let id = id(2, u8::from_str_radix);
-        delimited(tag("\t\t"), id, tag("  "))(input)
+        delimited(tag("\t\t"), id, tag("  ")).parse(input)
     }
 }
 
