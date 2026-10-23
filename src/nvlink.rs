@@ -13,7 +13,7 @@
 //! # fn main() -> std::io::Result<()> {
 //! let sysfs = Sysfs::default();
 //! let topology = nvlink::discover(&sysfs)?;
-//! let gpu_count = nvlink::discover_gpus(&sysfs)?.len();
+//! let gpu_count = nvlink::discover_gpus(&sysfs, Some(nvlink::NVIDIA))?.len();
 //! // Port GUIDs exist only after the RDMA drivers register their devices.
 //! let ports = nvlink::discover_management_ports(&sysfs)?;
 //! let guid = ports.first().map(|port| format!("0x{:016x}", port.guid));
@@ -31,9 +31,10 @@ use crate::platform::linux::{pci_functions, PciFunction};
 use crate::{attr_hex, context, failed, normalize_bdf, Sysfs};
 
 // Preserve the original discovery API for existing callers.
-pub use crate::platform::{discover_gpus, discover_topology as discover, Topology};
+pub use crate::platform::{discover_gpus, discover_topology as discover, GpuFunction, Topology};
 
-const NVIDIA: u32 = 0x10de;
+/// PCI vendor ID of NVIDIA, the value an NVIDIA init passes to the vendor filters.
+pub const NVIDIA: u32 = 0x10de;
 const MELLANOX: u32 = 0x15b3;
 const IS_SM_DISABLED: u32 = 1 << 10;
 // PCI VPD has a 15-bit byte address. Bound allocation even for a fake sysfs file.
@@ -335,7 +336,14 @@ mod tests {
         );
         assert_eq!(topology.gpus.len(), 8);
         assert!(topology.management_functions.is_empty());
-        assert_eq!(discover_gpus(&fake.sysfs).unwrap(), topology.gpus);
+        assert_eq!(
+            discover_gpus(&fake.sysfs, None).unwrap(),
+            topology
+                .gpus
+                .iter()
+                .map(|gpu| gpu.bdf.clone())
+                .collect::<Vec<_>>()
+        );
         assert_eq!(discover_switches(&fake.sysfs).unwrap(), topology.switches);
     }
 
@@ -403,7 +411,7 @@ mod tests {
         mlx(&fake, "0000:02:00.0", false);
         fs::write(fake.device("0000:02:00.0").join("vpd"), b"malformed").unwrap();
         assert_eq!(
-            discover_gpus(&fake.sysfs).unwrap(),
+            discover_gpus(&fake.sysfs, None).unwrap(),
             ["0000:03:00.0", "0000:04:00.0"]
         );
     }
