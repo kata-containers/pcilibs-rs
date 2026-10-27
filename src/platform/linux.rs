@@ -5,11 +5,20 @@ use crate::nvlink::ManagementFunction;
 use crate::{attr_hex, context, failed, normalize_bdf, nvlink, Sysfs};
 use std::{fs, io};
 
+/// A VGA or 3D controller function of any vendor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GpuFunction {
+    pub bdf: String,
+    pub vendor: u32,
+}
+
 /// Lists are sorted by canonical BDF so boot-time selection is deterministic.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Topology {
-    /// Include pre-CC GPUs so init policy does not depend on CC support.
-    pub gpus: Vec<String>,
+    /// Every vendor, so classification can tell a mixed or unknown platform from
+    /// an NVIDIA one. Include pre-CC GPUs so init policy does not depend on CC
+    /// support.
+    pub gpus: Vec<GpuFunction>,
     /// Bridge class identifies candidates; BAR0 must confirm their generation.
     pub switches: Vec<String>,
     /// Include sibling PFs because full-capability PFs may lack the VPD marker.
@@ -17,6 +26,15 @@ pub struct Topology {
 }
 
 impl Topology {
+    /// The GPUs of one vendor, or every vendor's for `None`. An NVIDIA init
+    /// passes `Some(nvlink::NVIDIA)`: another vendor's display device must
+    /// neither load the NVIDIA driver nor make a lone GPU look linked.
+    pub fn gpus_by_vendor(&self, vendor: Option<u32>) -> impl Iterator<Item = &GpuFunction> {
+        self.gpus
+            .iter()
+            .filter(move |gpu| vendor.is_none() || vendor == Some(gpu.vendor))
+    }
+
     pub fn fabric_interface(&self) -> crate::platform::FabricInterface {
         crate::platform::FabricInterface::from_presence(
             !self.switches.is_empty(),
@@ -44,8 +62,8 @@ pub fn discover_with_catalog(
     let gpus = topology
         .gpus
         .iter()
-        .map(|bdf| {
-            let path = sysfs.devices().join(bdf);
+        .map(|gpu| {
+            let path = sysfs.devices().join(&gpu.bdf);
             let read_id = |name| {
                 u16::try_from(attr_hex(&path, name)?).map_err(|_| {
                     failed(
@@ -94,16 +112,20 @@ pub(crate) fn pci_functions(sysfs: &Sysfs) -> io::Result<Vec<PciFunction>> {
     Ok(functions)
 }
 
-fn is_gpu(function: &PciFunction) -> bool {
-    matches!(function.class >> 8, 0x0300 | 0x0302)
+/// A VGA or 3D controller function of one vendor, or of any vendor for `None`.
+fn is_gpu(function: &PciFunction, vendor: Option<u32>) -> bool {
+    (vendor.is_none() || vendor == Some(function.vendor))
+        && matches!(function.class >> 8, 0x0300 | 0x0302)
 }
 
 /// Init needs GPU BDFs before loading drivers, without BAR or VPD access.
-/// Identity errors propagate so a failed scan cannot select CPU-only mode.
-pub fn discover_gpus(sysfs: &Sysfs) -> io::Result<Vec<String>> {
+/// `None` lists every vendor's GPUs; `Some(nvlink::NVIDIA)` only those that
+/// take the NVIDIA driver. Identity errors propagate so a failed scan cannot
+/// select CPU-only mode.
+pub fn discover_gpus(sysfs: &Sysfs, vendor: Option<u32>) -> io::Result<Vec<String>> {
     Ok(pci_functions(sysfs)?
         .into_iter()
-        .filter(is_gpu)
+        .filter(|function| is_gpu(function, vendor))
         .map(|device| device.bdf)
         .collect())
 }
@@ -114,8 +136,11 @@ pub fn discover_topology(sysfs: &Sysfs) -> io::Result<Topology> {
     let functions = pci_functions(sysfs)?;
     let gpus = functions
         .iter()
-        .filter(|function| is_gpu(function))
-        .map(|function| function.bdf.clone())
+        .filter(|function| is_gpu(function, None))
+        .map(|function| GpuFunction {
+            bdf: function.bdf.clone(),
+            vendor: function.vendor,
+        })
         .collect();
     let (switches, management_functions) = nvlink::discover_fabric(sysfs, &functions)?;
     Ok(Topology {
@@ -128,6 +153,7 @@ pub fn discover_topology(sysfs: &Sysfs) -> io::Result<Topology> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::nvlink::NVIDIA;
     use crate::testfs::{self, Fake};
 
     fn mlx(fake: &Fake, bdf: &str, marker: bool) {
@@ -207,7 +233,13 @@ mod tests {
             detected.platform.fabric,
             crate::platform::FabricInterface::None
         );
-        assert_eq!(detected.topology.gpus, ["0000:01:00.0"]);
+        assert_eq!(
+            detected.topology.gpus,
+            [GpuFunction {
+                bdf: "0000:01:00.0".to_owned(),
+                vendor: 0x10de
+            }]
+        );
         assert!(detected.topology.switches.is_empty());
         assert!(detected.topology.management_functions.is_empty());
         assert!(!fake.sysfs.infiniband().exists());
@@ -229,13 +261,37 @@ mod tests {
     #[test]
     fn gpu_inventory_keeps_other_vendors_without_applying_nvidia_profiles() {
         let fake = testfs::fake();
-        let bdf = "0000:01:00.0";
-        fake.add_pci_device(bdf, 0x1002, 0x2330, 0x030000, None);
-        fs::write(fake.device(bdf).join("subsystem_device"), "0x16c0").unwrap();
-        assert_eq!(discover_gpus(&fake.sysfs).unwrap(), [bdf]);
-        let result = discover(&fake.sysfs).unwrap();
-        assert_eq!(result.platform.gpu_count, 1);
-        assert_eq!(result.platform.kind, crate::platform::Kind::Unknown);
+        let vga = "0000:01:00.0";
+        fake.add_pci_device(vga, 0x1002, 0x2330, 0x030000, None);
+        fs::write(fake.device(vga).join("subsystem_device"), "0x16c0").unwrap();
+        assert_eq!(discover_gpus(&fake.sysfs, None).unwrap(), [vga]);
+        let detected = discover(&fake.sysfs).unwrap();
+        assert_eq!(detected.platform.gpu_count, 1);
+        assert_eq!(detected.platform.kind, crate::platform::Kind::Unknown);
+        // The inventory keeps it; the NVIDIA filter does not see it.
+        assert_eq!(detected.topology.gpus.len(), 1);
+        assert_eq!(detected.topology.gpus_by_vendor(None).count(), 1);
+        assert_eq!(detected.topology.gpus_by_vendor(Some(NVIDIA)).count(), 0);
+        assert!(discover_gpus(&fake.sysfs, Some(NVIDIA)).unwrap().is_empty());
+
+        // Beside an NVIDIA GPU the platform stays unknown, but init sees one GPU.
+        let gpu = "0000:02:00.0";
+        fake.add_pci_device(gpu, 0x10de, 0x2331, 0x030200, None);
+        fs::write(fake.device(gpu).join("subsystem_device"), "0x1626").unwrap();
+        assert_eq!(discover_gpus(&fake.sysfs, None).unwrap(), [vga, gpu]);
+        assert_eq!(discover_gpus(&fake.sysfs, Some(NVIDIA)).unwrap(), [gpu]);
+        let detected = discover(&fake.sysfs).unwrap();
+        assert_eq!(detected.platform.gpu_count, 2);
+        assert_eq!(detected.platform.kind, crate::platform::Kind::Unknown);
+        assert_eq!(detected.topology.gpus_by_vendor(None).count(), 2);
+        assert_eq!(
+            detected
+                .topology
+                .gpus_by_vendor(Some(NVIDIA))
+                .map(|gpu| gpu.bdf.as_str())
+                .collect::<Vec<_>>(),
+            [gpu]
+        );
     }
     #[test]
     fn loaded_extensions_reach_sysfs_discovery_without_changing_defaults() {
