@@ -155,9 +155,9 @@ mod tests {
     #[test]
     fn enumerates_and_sorts_by_num() {
         let root = TempDir::new().unwrap();
-        add(root.path(), 42, "0x10de", "0x2330", "0x030200");
-        add(root.path(), 7, "0x10de", "0x22a3", "0x068000");
-        add(root.path(), 3, "0x15b3", "0x101e", "0x020000");
+        add(root.path(), 42, 0x10de, 0x2330, 0x030200);
+        add(root.path(), 7, 0x10de, 0x22a3, 0x068000);
+        add(root.path(), 3, 0x15b3, 0x101e, 0x020000);
 
         let devs = enumerate_iommufd(root.path(), &Sysfs::new(root.path()));
         assert_eq!(
@@ -175,7 +175,7 @@ mod tests {
     #[test]
     fn bdf_is_the_function_the_vfio_dev_links_to() {
         let root = TempDir::new().unwrap();
-        add_at(root.path(), 0, "05:00.1", "0x15b3", "0x1021", "0x020700");
+        add_at(root.path(), 0, "05:00.1", 0x15b3, 0x1021, 0x020700);
 
         let devs = enumerate_iommufd(root.path(), &Sysfs::new(root.path()));
 
@@ -215,9 +215,9 @@ mod tests {
     #[test]
     fn device_name_resolves_from_pci_ids() {
         let root = TempDir::new().unwrap();
-        add(root.path(), 0, "0x10de", "0x2330", "0x030200");
+        add(root.path(), 0, 0x10de, 0x2330, 0x030200);
         // A device id the database cannot know.
-        add(root.path(), 1, "0x10de", "0xdead", "0x030200");
+        add(root.path(), 1, 0x10de, 0xdead, 0x030200);
 
         let devs = enumerate_iommufd(root.path(), &Sysfs::new(root.path()));
         let h100 = devs[0].device_name().expect("10de:2330 must be known");
@@ -228,7 +228,7 @@ mod tests {
     #[test]
     fn class_prefix_drops_the_prog_if_byte() {
         let root = TempDir::new().unwrap();
-        add(root.path(), 0, "0x10de", "0x2330", "0x030200");
+        add(root.path(), 0, 0x10de, 0x2330, 0x030200);
 
         let devs = enumerate_iommufd(root.path(), &Sysfs::new(root.path()));
 
@@ -273,7 +273,7 @@ mod tests {
     #[test]
     fn lookup_returns_dev_for_known_name() {
         let root = TempDir::new().unwrap();
-        add(root.path(), 5, "0x10de", "0x22a3", "0x068000");
+        add(root.path(), 5, 0x10de, 0x22a3, 0x068000);
 
         let dev = lookup_iommufd_dev("vfio5", root.path(), &Sysfs::new(root.path()))
             .expect("should find vfio5");
@@ -295,7 +295,7 @@ mod tests {
     #[test]
     fn lookup_returns_none_when_cdev_absent_but_sysfs_present() {
         let root = TempDir::new().unwrap();
-        add(root.path(), 5, "0x10de", "0x22a3", "0x068000");
+        add(root.path(), 5, 0x10de, 0x22a3, 0x068000);
         fs::remove_file(root.path().join("devices/vfio5")).unwrap();
 
         assert!(lookup_iommufd_dev("vfio5", root.path(), &Sysfs::new(root.path())).is_none());

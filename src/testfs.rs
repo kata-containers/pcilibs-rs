@@ -69,13 +69,7 @@ impl Fake {
         driver: Option<&str>,
     ) {
         self.add_device(address, driver);
-
-        let path = self.device(address);
-        fs::write(path.join("vendor"), format!("{vendor:#06x}\n")).unwrap();
-        fs::write(path.join("subsystem_vendor"), format!("{vendor:#06x}\n")).unwrap();
-        fs::write(path.join("device"), format!("{device:#06x}\n")).unwrap();
-        fs::write(path.join("class"), format!("{class:#08x}\n")).unwrap();
-        fs::write(path.join("numa_node"), "0\n").unwrap();
+        pci_function(&self.sysfs, address, vendor, device, class);
     }
 
     /// Everything [`crate::PciDev`] reads to open a function: identity,
@@ -103,10 +97,11 @@ impl Fake {
         fs::write(path.join("power/runtime_status"), "active\n").unwrap();
     }
 
-    /// A ConnectX-7 InfiniBand function (15b3:1021), carrying the VPD role
-    /// marker of the management ConnectX when `sw_mng`.
+    /// A ConnectX-7 InfiniBand function, carrying the VPD role marker of the
+    /// management ConnectX when `sw_mng`.
     pub fn add_connectx(&self, address: &str, sw_mng: bool) {
-        self.add_pci_device(address, 0x15b3, 0x1021, 0x020700, None);
+        let (vendor, device, class) = CONNECTX7_IB;
+        self.add_pci_device(address, vendor, device, class, None);
         if sw_mng {
             mark_sw_mng(&self.device(address));
         }
@@ -185,14 +180,30 @@ fn read(path: PathBuf) -> String {
     fs::read_to_string(path).unwrap_or_default()
 }
 
-/// Add one fake cdev `vfio<n>` with the given sysfs `vendor`, `device`, and
-/// `class` contents (as sysfs prints them, e.g. "0x10de", "0x2330",
-/// "0x030200").  The function sits alone on bus `n`; [`add_at`] places it.
+/// The attributes a PCI function carries, written the way sysfs prints them,
+/// under `bus/pci/devices/<address>`.  Both fixture families write a function
+/// through here, so there is one description of one.
+fn pci_function(sysfs: &Sysfs, address: &str, vendor: u16, device: u16, class: u32) -> PathBuf {
+    let path = sysfs.device(address).expect("a PCI address");
+    fs::create_dir_all(&path).unwrap();
+    fs::write(path.join("vendor"), format!("{vendor:#06x}\n")).unwrap();
+    fs::write(path.join("subsystem_vendor"), format!("{vendor:#06x}\n")).unwrap();
+    fs::write(path.join("device"), format!("{device:#06x}\n")).unwrap();
+    fs::write(path.join("class"), format!("{class:#08x}\n")).unwrap();
+    fs::write(path.join("numa_node"), "0\n").unwrap();
+    path
+}
+
+/// A ConnectX-7 as an InfiniBand controller: vendor, device, 24-bit class.
+const CONNECTX7_IB: (u16, u16, u32) = (0x15b3, 0x1021, 0x020700);
+
+/// Add one fake cdev `vfio<n>` with the given PCI `vendor`, `device` and
+/// 24-bit `class`.  The function sits alone on bus `n`; [`add_at`] places it.
 ///
 /// `root` is both the `/dev/vfio` and the sysfs root: the cdev lands at
 /// `<root>/devices/vfio<n>` and its function under `<root>/bus/pci/devices`,
 /// so a caller passes `root` and `Sysfs::new(root)` to the same tree.
-pub fn add(root: &Path, n: u32, vendor: &str, device: &str, class: &str) {
+pub fn add(root: &Path, n: u32, vendor: u16, device: u16, class: u32) {
     let address = format!("0000:{n:02x}:00.0");
     add_at(root, n, &address, vendor, device, class);
 }
@@ -202,33 +213,23 @@ pub fn add(root: &Path, n: u32, vendor: &str, device: &str, class: &str) {
 /// `bus/pci/devices/<address>` carries the identity, and
 /// `class/vfio-dev/vfio<n>/device` links to it.  Returns the function's
 /// directory, for the attributes a test is about.
-pub fn add_at(
-    root: &Path,
-    n: u32,
-    address: &str,
-    vendor: &str,
-    device: &str,
-    class: &str,
-) -> PathBuf {
+pub fn add_at(root: &Path, n: u32, address: &str, vendor: u16, device: u16, class: u32) -> PathBuf {
     let devices = root.join("devices");
     fs::create_dir_all(&devices).unwrap();
     fs::write(devices.join(format!("vfio{n}")), b"").unwrap();
     let sysfs = Sysfs::new(root);
-    let function = sysfs.device(address).expect("a PCI address");
-    fs::create_dir_all(&function).unwrap();
-    fs::write(function.join("vendor"), format!("{vendor}\n")).unwrap();
-    fs::write(function.join("device"), format!("{device}\n")).unwrap();
-    fs::write(function.join("class"), format!("{class}\n")).unwrap();
+    let function = pci_function(&sysfs, address, vendor, device, class);
     let vfio_dev = sysfs.vfio_dev(&format!("vfio{n}"));
     fs::create_dir_all(&vfio_dev).unwrap();
     std::os::unix::fs::symlink(&function, vfio_dev.join("device")).unwrap();
     function
 }
 
-/// A ConnectX-7 InfiniBand function (15b3:1021) as cdev `vfio<n>`, carrying
-/// the VPD role marker of the management ConnectX when `sw_mng`.
+/// A ConnectX-7 InfiniBand function as cdev `vfio<n>`, carrying the VPD role
+/// marker of the management ConnectX when `sw_mng`.
 pub fn add_connectx(root: &Path, n: u32, address: &str, sw_mng: bool) {
-    let function = add_at(root, n, address, "0x15b3", "0x1021", "0x020700");
+    let (vendor, device, class) = CONNECTX7_IB;
+    let function = add_at(root, n, address, vendor, device, class);
     if sw_mng {
         mark_sw_mng(&function);
     }
@@ -274,7 +275,7 @@ mod tests {
     #[test]
     fn a_cdev_links_to_the_function_that_carries_its_identity() {
         let root = tempfile::tempdir().unwrap();
-        add(root.path(), 42, "0x10de", "0x2330", "0x030200");
+        add(root.path(), 42, 0x10de, 0x2330, 0x030200);
 
         let sysfs = Sysfs::new(root.path());
         let device = sysfs.vfio_dev("vfio42").join("device");
