@@ -154,23 +154,12 @@ pub fn discover_topology(sysfs: &Sysfs) -> io::Result<Topology> {
 mod tests {
     use super::*;
     use crate::nvlink::NVIDIA;
-    use crate::testfs::{self, Fake};
-
-    fn mlx(fake: &Fake, bdf: &str, marker: bool) {
-        fake.add_pci_device(bdf, 0x15b3, 0x1021, 0x020700, None);
-        if marker {
-            fs::write(
-                fake.device(bdf).join("vpd"),
-                b"\x90\x0e\x00VA\x0bSMDL=SW_MNG\x78",
-            )
-            .unwrap();
-        }
-    }
+    use crate::testfs;
 
     #[test]
     fn platform_preserves_the_service_vm_interface_without_gpus() {
         let fake = testfs::fake();
-        mlx(&fake, "0000:05:00.0", true);
+        fake.add_connectx("0000:05:00.0", true);
         let detected = discover(&fake.sysfs).unwrap();
         assert_eq!(detected.platform.kind, crate::platform::Kind::Unknown);
         assert_eq!(
@@ -184,7 +173,7 @@ mod tests {
     #[test]
     fn subsystem_identity_refines_the_managed_fabric_family() {
         let fake = testfs::fake();
-        mlx(&fake, "0000:05:00.0", true);
+        fake.add_connectx("0000:05:00.0", true);
         let bdf = "0000:40:00.0";
         fake.add_pci_device(bdf, 0x10de, 0x3002, 0x030200, None);
         fs::write(fake.device(bdf).join("subsystem_device"), "0x2277").unwrap();
@@ -296,7 +285,7 @@ mod tests {
     #[test]
     fn loaded_extensions_reach_sysfs_discovery_without_changing_defaults() {
         let fake = testfs::fake();
-        mlx(&fake, "0000:05:00.0", true);
+        fake.add_connectx("0000:05:00.0", true);
         let bdf = "0000:40:00.0";
         fake.add_pci_device(bdf, 0x10de, 0xffff, 0x030200, None);
         fs::write(fake.device(bdf).join("subsystem_device"), "0x1234").unwrap();

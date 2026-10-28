@@ -103,6 +103,15 @@ impl Fake {
         fs::write(path.join("power/runtime_status"), "active\n").unwrap();
     }
 
+    /// A ConnectX-7 InfiniBand function (15b3:1021), carrying the VPD role
+    /// marker of the management ConnectX when `sw_mng`.
+    pub fn add_connectx(&self, address: &str, sw_mng: bool) {
+        self.add_pci_device(address, 0x15b3, 0x1021, 0x020700, None);
+        if sw_mng {
+            mark_sw_mng(&self.device(address));
+        }
+    }
+
     pub fn set_register(&self, address: &str, offset: u64, value: u32) {
         fs::OpenOptions::new()
             .write(true)
@@ -216,6 +225,35 @@ pub fn add_at(
     function
 }
 
+/// A ConnectX-7 InfiniBand function (15b3:1021) as cdev `vfio<n>`, carrying
+/// the VPD role marker of the management ConnectX when `sw_mng`.
+pub fn add_connectx(root: &Path, n: u32, address: &str, sw_mng: bool) {
+    let function = add_at(root, n, address, "0x15b3", "0x1021", "0x020700");
+    if sw_mng {
+        mark_sw_mng(&function);
+    }
+}
+
+/// The `VA` field NVIDIA's HGX Shared NVSwitch guide (19.0, section 2.5.2.2)
+/// shows on the management ConnectX, as `lspci -vv` prints it.
+pub const SW_MNG: &[u8] = b"MLX:MN=MLNX:CSKU=V2:UUID=V3:PCI=V0:SMDL=SW_MNG:MODL=C7010Z";
+
+/// A VPD of one read-only resource holding one keyword, then the end tag.
+pub fn vpd(keyword: &[u8; 2], value: &[u8]) -> Vec<u8> {
+    let length = (value.len() + 3) as u16;
+    let mut data = vec![0x90];
+    data.extend(length.to_le_bytes());
+    data.extend(keyword);
+    data.push(value.len() as u8);
+    data.extend(value);
+    data.push(0x78);
+    data
+}
+
+fn mark_sw_mng(function: &Path) {
+    fs::write(function.join("vpd"), vpd(b"VA", SW_MNG)).unwrap();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -245,5 +283,35 @@ mod tests {
             sysfs.device("0000:2a:00.0").unwrap()
         );
         assert_eq!(read(device.join("vendor")), "0x10de\n");
+    }
+
+    /// Both fixture families describe the management ConnectX the same
+    /// way, so the cdevs one enumerates are the functions a topology scan
+    /// names.
+    #[test]
+    fn a_connectx_cdev_is_the_function_the_scan_names() {
+        let root = tempfile::tempdir().unwrap();
+        add_connectx(root.path(), 1, "0000:05:00.0", true);
+        add_connectx(root.path(), 2, "0000:05:00.1", false);
+
+        let sysfs = Sysfs::new(root.path());
+        let cdevs = crate::enumerate_iommufd(root.path(), &sysfs);
+        let topology = crate::nvlink::discover(&sysfs).unwrap();
+        assert_eq!(
+            cdevs.iter().map(|dev| dev.bdf.as_str()).collect::<Vec<_>>(),
+            topology
+                .management_functions
+                .iter()
+                .map(|function| function.bdf.as_str())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            topology
+                .management_functions
+                .iter()
+                .map(|function| function.sw_mng)
+                .collect::<Vec<_>>(),
+            [true, false]
+        );
     }
 }

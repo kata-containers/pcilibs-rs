@@ -264,28 +264,8 @@ fn management_guid(path: &Path) -> io::Result<Option<u64>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testfs::{self, Fake};
+    use crate::testfs::{self, vpd, Fake, SW_MNG};
     use rstest::rstest;
-
-    const SW_MNG: &[u8] = b"MLX:MN=MLNX:CSKU=V2:UUID=V3:PCI=V0:SMDL=SW_MNG:MODL=C7010Z";
-
-    fn vpd(keyword: &[u8; 2], value: &[u8]) -> Vec<u8> {
-        let length = (value.len() + 3) as u16;
-        let mut data = vec![0x90];
-        data.extend(length.to_le_bytes());
-        data.extend(keyword);
-        data.push(value.len() as u8);
-        data.extend(value);
-        data.push(0x78);
-        data
-    }
-
-    fn mlx(fake: &Fake, bdf: &str, marker: bool) {
-        fake.add_pci_device(bdf, 0x15b3, 0x1021, 0x020700, None);
-        if marker {
-            fs::write(fake.device(bdf).join("vpd"), vpd(b"VA", SW_MNG)).unwrap();
-        }
-    }
 
     fn port(fake: &Fake, ib: &str, number: u32, mask: &str, gid: &str) {
         let path = fake
@@ -363,16 +343,16 @@ mod tests {
         }
         // Only the two LPFs carry SW_MNG, but all four present PFs belong.
         for function in [3, 1, 2, 0] {
-            mlx(&fake, &format!("0000:05:00.{function}"), function < 2);
+            fake.add_connectx(&format!("0000:05:00.{function}"), function < 2);
         }
-        mlx(&fake, "0000:05:00.5", true);
+        fake.add_connectx("0000:05:00.5", true);
         std::os::unix::fs::symlink(
             fake.device("0000:05:00.0"),
             fake.device("0000:05:00.5").join("physfn"),
         )
         .unwrap();
-        mlx(&fake, "0000:06:00.0", false);
-        mlx(&fake, "0001:05:00.0", false);
+        fake.add_connectx("0000:06:00.0", false);
+        fake.add_connectx("0001:05:00.0", false);
         fake.add_pci_device("0000:05:00.4", 0x8086, 1, 0x020000, None);
         let topology = discover(&fake.sysfs).unwrap();
         assert_eq!(topology.gpus.len(), gpu_count as usize);
@@ -408,7 +388,7 @@ mod tests {
         let fake = testfs::fake();
         fake.add_pci_device("0000:04:00.0", 0x10de, 0x20b0, 0x030200, None);
         fake.add_pci_device("0000:03:00.0", 0x10de, 0x2b85, 0x030000, None);
-        mlx(&fake, "0000:02:00.0", false);
+        fake.add_connectx("0000:02:00.0", false);
         fs::write(fake.device("0000:02:00.0").join("vpd"), b"malformed").unwrap();
         assert_eq!(
             discover_gpus(&fake.sysfs, None).unwrap(),
@@ -477,7 +457,7 @@ mod tests {
     #[test]
     fn unreadable_oversized_and_corrupt_vpd_do_not_hide_management_devices() {
         let fake = testfs::fake();
-        mlx(&fake, "0000:05:00.0", false);
+        fake.add_connectx("0000:05:00.0", false);
         let path = fake.device("0000:05:00.0").join("vpd");
         fs::create_dir(&path).unwrap();
         assert!(discover(&fake.sysfs).is_err());
@@ -498,7 +478,7 @@ mod tests {
             ("0000:05:00.2", false),
             ("0000:01:00.0", false),
         ] {
-            mlx(&fake, bdf, marker);
+            fake.add_connectx(bdf, marker);
         }
         fake.add_infiniband("mlx5_0", "0000:01:00.0", "1: CA", ""); // Must not win first-port selection.
         fake.add_infiniband("mlx5_1", "0000:05:00.2", "1: CA", "");
@@ -546,7 +526,7 @@ mod tests {
         #[case] file: &str,
     ) {
         let fake = testfs::fake();
-        mlx(&fake, "0000:05:00.0", true);
+        fake.add_connectx("0000:05:00.0", true);
         fake.add_infiniband("mlx5_0", "0000:05:00.0", "1: CA", "");
         port(&fake, "mlx5_0", 1, mask, gid);
         let error = discover_management_ports(&fake.sysfs).unwrap_err();
@@ -571,7 +551,7 @@ mod tests {
     #[case::gid("gids/0")]
     fn missing_port_attributes_are_not_silently_skipped(#[case] file: &str) {
         let fake = testfs::fake();
-        mlx(&fake, "0000:05:00.0", true);
+        fake.add_connectx("0000:05:00.0", true);
         fake.add_infiniband("mlx5_0", "0000:05:00.0", "1: CA", "");
         port(&fake, "mlx5_0", 1, "0", "fe80::1");
         fs::remove_file(fake.sysfs.infiniband().join("mlx5_0/ports/1").join(file)).unwrap();
