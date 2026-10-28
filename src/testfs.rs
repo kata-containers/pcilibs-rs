@@ -178,22 +178,42 @@ fn read(path: PathBuf) -> String {
 
 /// Add one fake cdev `vfio<n>` with the given sysfs `vendor`, `device`, and
 /// `class` contents (as sysfs prints them, e.g. "0x10de", "0x2330",
-/// "0x030200").
+/// "0x030200").  The function sits alone on bus `n`; [`add_at`] places it.
 ///
 /// `root` is both the `/dev/vfio` and the sysfs root: the cdev lands at
-/// `<root>/devices/vfio<n>` and its identity under `<root>/class/vfio-dev/`,
+/// `<root>/devices/vfio<n>` and its function under `<root>/bus/pci/devices`,
 /// so a caller passes `root` and `Sysfs::new(root)` to the same tree.
 pub fn add(root: &Path, n: u32, vendor: &str, device: &str, class: &str) {
+    let address = format!("0000:{n:02x}:00.0");
+    add_at(root, n, &address, vendor, device, class);
+}
+
+/// [`add`] at a chosen address, so a test can put several functions on one
+/// slot.  Laid out the way the kernel does it: the function under
+/// `bus/pci/devices/<address>` carries the identity, and
+/// `class/vfio-dev/vfio<n>/device` links to it.  Returns the function's
+/// directory, for the attributes a test is about.
+pub fn add_at(
+    root: &Path,
+    n: u32,
+    address: &str,
+    vendor: &str,
+    device: &str,
+    class: &str,
+) -> PathBuf {
     let devices = root.join("devices");
     fs::create_dir_all(&devices).unwrap();
     fs::write(devices.join(format!("vfio{n}")), b"").unwrap();
-    let dev_dir = Sysfs::new(root)
-        .vfio_dev(&format!("vfio{n}"))
-        .join("device");
-    fs::create_dir_all(&dev_dir).unwrap();
-    fs::write(dev_dir.join("vendor"), format!("{vendor}\n")).unwrap();
-    fs::write(dev_dir.join("device"), format!("{device}\n")).unwrap();
-    fs::write(dev_dir.join("class"), format!("{class}\n")).unwrap();
+    let sysfs = Sysfs::new(root);
+    let function = sysfs.device(address).expect("a PCI address");
+    fs::create_dir_all(&function).unwrap();
+    fs::write(function.join("vendor"), format!("{vendor}\n")).unwrap();
+    fs::write(function.join("device"), format!("{device}\n")).unwrap();
+    fs::write(function.join("class"), format!("{class}\n")).unwrap();
+    let vfio_dev = sysfs.vfio_dev(&format!("vfio{n}"));
+    fs::create_dir_all(&vfio_dev).unwrap();
+    std::os::unix::fs::symlink(&function, vfio_dev.join("device")).unwrap();
+    function
 }
 
 #[cfg(test)]
@@ -209,5 +229,21 @@ mod tests {
         let driver = fake.driver("vfio-pci");
         assert!(driver.join("0000:65:00.0").is_symlink());
         assert!(!driver.join("65:00.0").exists());
+    }
+
+    /// The identity lives on the function; the vfio-dev entry only links to
+    /// it, as the kernel lays it out.
+    #[test]
+    fn a_cdev_links_to_the_function_that_carries_its_identity() {
+        let root = tempfile::tempdir().unwrap();
+        add(root.path(), 42, "0x10de", "0x2330", "0x030200");
+
+        let sysfs = Sysfs::new(root.path());
+        let device = sysfs.vfio_dev("vfio42").join("device");
+        assert_eq!(
+            fs::read_link(&device).unwrap(),
+            sysfs.device("0000:2a:00.0").unwrap()
+        );
+        assert_eq!(read(device.join("vendor")), "0x10de\n");
     }
 }
