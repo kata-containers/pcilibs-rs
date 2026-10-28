@@ -198,13 +198,15 @@ fn pci_function(sysfs: &Sysfs, address: &str, vendor: u16, device: u16, class: u
 const CONNECTX7_IB: (u16, u16, u32) = (0x15b3, 0x1021, 0x020700);
 
 /// Add one fake cdev `vfio<n>` with the given PCI `vendor`, `device` and
-/// 24-bit `class`.  The function sits alone on bus `n`; [`add_at`] places it.
+/// 24-bit `class`.  The function sits alone on bus `n & 0xff` of domain
+/// `n >> 8`, so every cdev number below 2^24 gets an address of its own;
+/// [`add_at`] places it.
 ///
 /// `root` is both the `/dev/vfio` and the sysfs root: the cdev lands at
 /// `<root>/devices/vfio<n>` and its function under `<root>/bus/pci/devices`,
 /// so a caller passes `root` and `Sysfs::new(root)` to the same tree.
 pub fn add(root: &Path, n: u32, vendor: u16, device: u16, class: u32) {
-    let address = format!("0000:{n:02x}:00.0");
+    let address = format!("{:04x}:{:02x}:00.0", n >> 8, n & 0xff);
     add_at(root, n, &address, vendor, device, class);
 }
 
@@ -221,7 +223,10 @@ pub fn add_at(root: &Path, n: u32, address: &str, vendor: u16, device: u16, clas
     let function = pci_function(&sysfs, address, vendor, device, class);
     let vfio_dev = sysfs.vfio_dev(&format!("vfio{n}"));
     fs::create_dir_all(&vfio_dev).unwrap();
-    std::os::unix::fs::symlink(&function, vfio_dev.join("device")).unwrap();
+    // Relative to the link, as the kernel spells it, so the tree reads the
+    // same from any working directory when `root` is a relative path.
+    let target = Path::new("../../../bus/pci/devices").join(function.file_name().unwrap());
+    std::os::unix::fs::symlink(target, vfio_dev.join("device")).unwrap();
     function
 }
 
@@ -271,7 +276,8 @@ mod tests {
     }
 
     /// The identity lives on the function; the vfio-dev entry only links to
-    /// it, as the kernel lays it out.
+    /// it, as the kernel lays it out: a relative link, so the tree does not
+    /// depend on where `root` was spelled from.
     #[test]
     fn a_cdev_links_to_the_function_that_carries_its_identity() {
         let root = tempfile::tempdir().unwrap();
@@ -281,9 +287,29 @@ mod tests {
         let device = sysfs.vfio_dev("vfio42").join("device");
         assert_eq!(
             fs::read_link(&device).unwrap(),
-            sysfs.device("0000:2a:00.0").unwrap()
+            Path::new("../../../bus/pci/devices/0000:2a:00.0")
+        );
+        assert_eq!(
+            fs::canonicalize(&device).unwrap(),
+            fs::canonicalize(sysfs.device("0000:2a:00.0").unwrap()).unwrap()
         );
         assert_eq!(read(device.join("vendor")), "0x10de\n");
+    }
+
+    /// Cdev numbers are independent of PCI bus numbers, so the fixture must
+    /// not run out of addresses at 256.
+    #[test]
+    fn every_cdev_number_gets_an_address_of_its_own() {
+        let root = tempfile::tempdir().unwrap();
+        for n in [255, 256, 0x1_00ff] {
+            add(root.path(), n, 0x10de, 0x2330, 0x030200);
+        }
+
+        let devs = crate::enumerate_iommufd(root.path(), &Sysfs::new(root.path()));
+        assert_eq!(
+            devs.iter().map(|dev| dev.bdf.as_str()).collect::<Vec<_>>(),
+            ["0000:ff:00.0", "0001:00:00.0", "0100:ff:00.0"]
+        );
     }
 
     /// Both fixture families describe the management ConnectX the same
