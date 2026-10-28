@@ -28,7 +28,7 @@ use std::net::Ipv6Addr;
 use std::path::Path;
 
 use crate::platform::linux::{pci_functions, PciFunction};
-use crate::{attr_hex, context, failed, normalize_bdf, Sysfs};
+use crate::{attr_hex, context, failed, normalize_bdf, slot, Sysfs};
 
 // Preserve the original discovery API for existing callers.
 pub use crate::platform::{discover_gpus, discover_topology as discover, GpuFunction, Topology};
@@ -108,11 +108,6 @@ pub(crate) fn discover_fabric(
         .filter(|function| management_slots.contains(slot(&function.bdf)))
         .collect();
     Ok((switches, management_functions))
-}
-
-// Normalization guarantees the function separator.
-fn slot(bdf: &str) -> &str {
-    bdf.rsplit_once('.').unwrap().0
 }
 
 fn invalid(what: &str) -> io::Error {
