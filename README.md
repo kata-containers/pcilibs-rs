@@ -188,6 +188,7 @@ fn inspect_hardware() -> std::io::Result<()> {
     println!("NVIDIA GPUs: {}", topology.gpus_by_vendor(Some(nvlink::NVIDIA)).count());
     println!("Direct NVSwitches: {:?}", topology.switches);
     println!("Management PFs: {:?}", topology.management_functions);
+    println!("Service VM fabric: {:?}", topology.fabric().collect::<Vec<_>>());
 
     // Port GUIDs exist only after RDMA drivers register their devices.
     let ports = nvlink::discover_management_ports(&sysfs)?;
@@ -210,6 +211,11 @@ foreign GPU classifies the platform as unknown instead of vanishing. The
 vendor filters `discover_gpus(&sysfs, vendor)` and
 `topology.gpus_by_vendor(vendor)` keep every vendor for `None`; an NVIDIA init
 passes `Some(nvlink::NVIDIA)` for its driver and service decisions.
+`topology.fabric()` is the passthrough list of the HGX guide's section 3.2.2,
+the switch chips where they are PCI functions and the management ConnectX PFs
+where they are not, so the device plugin on the host and NVRC in the guest
+take the fabric's membership from one place. `slot(bdf)` is the address
+without its function, which sibling functions share.
 
 H100/H200 switches are NVIDIA Other Bridge PCI functions. B200/B300 management
 ConnectX PFs are identified by the exact `SMDL=SW_MNG` field in PCI VPD, then

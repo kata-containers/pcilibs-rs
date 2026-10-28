@@ -320,6 +320,7 @@ mod tests {
                 .collect::<Vec<_>>()
         );
         assert_eq!(discover_switches(&fake.sysfs).unwrap(), topology.switches);
+        assert_eq!(topology.fabric().collect::<Vec<_>>(), topology.switches);
     }
 
     #[rstest]
