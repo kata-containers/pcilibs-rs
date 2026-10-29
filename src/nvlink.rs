@@ -14,9 +14,10 @@
 //! let sysfs = Sysfs::default();
 //! let topology = nvlink::discover(&sysfs)?;
 //! let gpu_count = nvlink::discover_gpus(&sysfs, Some(nvlink::NVIDIA))?.len();
-//! // Port GUIDs exist only after the RDMA drivers register their devices.
-//! let ports = nvlink::discover_management_ports(&sysfs)?;
-//! let guid = ports.first().map(|port| format!("0x{:016x}", port.guid));
+//! // Port GUIDs exist only after the RDMA drivers register their devices,
+//! // so load them first; the PCI scan above is not repeated.
+//! let ports = topology.management_ports(&sysfs)?;
+//! let guid = ports.first().map(|port| port.guid_string());
 //! # Ok(())
 //! # }
 //! ```
@@ -28,7 +29,7 @@ use std::net::Ipv6Addr;
 use std::path::Path;
 
 use crate::platform::linux::{pci_functions, PciFunction};
-use crate::{attr_hex, context, failed, normalize_bdf, Sysfs};
+use crate::{attr_hex, context, failed, normalize_bdf, slot, Sysfs};
 
 // Preserve the original discovery API for existing callers.
 pub use crate::platform::{discover_gpus, discover_topology as discover, GpuFunction, Topology};
@@ -56,8 +57,16 @@ pub struct ManagementPort {
     pub pci_bdf: String,
     pub ib_device: String,
     pub port: u32,
-    /// Low 64 bits of GID 0. Format as `format!("0x{:016x}", port.guid)` for FM.
+    /// Low 64 bits of GID 0; [`ManagementPort::guid_string`] spells it for FM.
     pub guid: u64,
+}
+
+impl ManagementPort {
+    /// The port GUID as `ibstat` prints it and NVLSM and FM take it on `-g`:
+    /// `0x` and sixteen hex digits.
+    pub fn guid_string(&self) -> String {
+        format!("0x{:016x}", self.guid)
+    }
 }
 
 fn is_switch(function: &PciFunction) -> bool {
@@ -108,11 +117,6 @@ pub(crate) fn discover_fabric(
         .filter(|function| management_slots.contains(slot(&function.bdf)))
         .collect();
     Ok((switches, management_functions))
-}
-
-// Normalization guarantees the function separator.
-fn slot(bdf: &str) -> &str {
-    bdf.rsplit_once('.').unwrap().0
 }
 
 fn invalid(what: &str) -> io::Error {
@@ -182,58 +186,63 @@ fn vpd_sw_mng(mut data: &[u8]) -> io::Result<bool> {
     Err(invalid("VPD has no end resource"))
 }
 
-/// PCI role and SM capability keep unrelated NICs out of FM/NVLSM selection.
-/// Sort by BDF, numeric port, then IB name for deterministic selection.
-/// Requires registered IB devices: missing trees/read/parse failures are errors;
-/// an existing tree with no eligible ports returns an empty vector.
-pub fn discover_management_ports(sysfs: &Sysfs) -> io::Result<Vec<ManagementPort>> {
-    let topology = discover(sysfs)?;
-    let root = sysfs.infiniband();
-    let entries = fs::read_dir(&root).map_err(|e| context(e, root.display()))?;
-    let mut ports = Vec::new();
-    for entry in entries {
-        let entry = entry?;
-        let path = entry.path();
-        let device = match fs::read_link(path.join("device")) {
-            Ok(device) => device,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
-            Err(e) => return Err(context(e, path.display())),
-        };
-        let Some(bdf) = device
-            .file_name()
-            .and_then(|n| n.to_str())
-            .and_then(normalize_bdf)
-        else {
-            continue;
-        };
-        if !topology.management_functions.iter().any(|f| f.bdf == bdf) {
-            continue;
-        }
-        let port_root = path.join("ports");
-        for port in fs::read_dir(&port_root).map_err(|e| context(e, port_root.display()))? {
-            let port = port?;
-            let Some(number) = port
+impl Topology {
+    /// The SM-enabled InfiniBand ports of the management functions, which
+    /// NVLSM and FM run on.  PCI role and SM capability keep unrelated NICs
+    /// out; the result is sorted by BDF, numeric port, then IB name, so the
+    /// first entry is a deterministic choice.  Reads only the InfiniBand
+    /// class, so a caller that scanned PCI before loading the RDMA drivers
+    /// does not scan it again.  Needs the drivers registered: a missing tree
+    /// or an unreadable or malformed attribute is an error, a tree with no
+    /// eligible port an empty vector.
+    pub fn management_ports(&self, sysfs: &Sysfs) -> io::Result<Vec<ManagementPort>> {
+        let root = sysfs.infiniband();
+        let entries = fs::read_dir(&root).map_err(|e| context(e, root.display()))?;
+        let mut ports = Vec::new();
+        for entry in entries {
+            let entry = entry?;
+            let path = entry.path();
+            let device = match fs::read_link(path.join("device")) {
+                Ok(device) => device,
+                Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+                Err(e) => return Err(context(e, path.display())),
+            };
+            let Some(bdf) = device
                 .file_name()
-                .to_str()
-                .and_then(|n| n.parse::<u32>().ok())
-                .filter(|n| *n > 0)
+                .and_then(|n| n.to_str())
+                .and_then(normalize_bdf)
             else {
                 continue;
             };
-            if let Some(guid) = management_guid(&port.path())? {
-                ports.push(ManagementPort {
-                    pci_bdf: bdf.clone(),
-                    ib_device: entry.file_name().to_string_lossy().into_owned(),
-                    port: number,
-                    guid,
-                });
+            if !self.management_functions.iter().any(|f| f.bdf == bdf) {
+                continue;
+            }
+            let port_root = path.join("ports");
+            for port in fs::read_dir(&port_root).map_err(|e| context(e, port_root.display()))? {
+                let port = port?;
+                let Some(number) = port
+                    .file_name()
+                    .to_str()
+                    .and_then(|n| n.parse::<u32>().ok())
+                    .filter(|n| *n > 0)
+                else {
+                    continue;
+                };
+                if let Some(guid) = management_guid(&port.path())? {
+                    ports.push(ManagementPort {
+                        pci_bdf: bdf.clone(),
+                        ib_device: entry.file_name().to_string_lossy().into_owned(),
+                        port: number,
+                        guid,
+                    });
+                }
             }
         }
+        ports.sort_by(|a, b| {
+            (&a.pci_bdf, a.port, &a.ib_device).cmp(&(&b.pci_bdf, b.port, &b.ib_device))
+        });
+        Ok(ports)
     }
-    ports.sort_by(|a, b| {
-        (&a.pci_bdf, a.port, &a.ib_device).cmp(&(&b.pci_bdf, b.port, &b.ib_device))
-    });
-    Ok(ports)
 }
 
 fn management_guid(path: &Path) -> io::Result<Option<u64>> {
@@ -264,28 +273,8 @@ fn management_guid(path: &Path) -> io::Result<Option<u64>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testfs::{self, Fake};
+    use crate::testfs::{self, vpd, Fake, SW_MNG};
     use rstest::rstest;
-
-    const SW_MNG: &[u8] = b"MLX:MN=MLNX:CSKU=V2:UUID=V3:PCI=V0:SMDL=SW_MNG:MODL=C7010Z";
-
-    fn vpd(keyword: &[u8; 2], value: &[u8]) -> Vec<u8> {
-        let length = (value.len() + 3) as u16;
-        let mut data = vec![0x90];
-        data.extend(length.to_le_bytes());
-        data.extend(keyword);
-        data.push(value.len() as u8);
-        data.extend(value);
-        data.push(0x78);
-        data
-    }
-
-    fn mlx(fake: &Fake, bdf: &str, marker: bool) {
-        fake.add_pci_device(bdf, 0x15b3, 0x1021, 0x020700, None);
-        if marker {
-            fs::write(fake.device(bdf).join("vpd"), vpd(b"VA", SW_MNG)).unwrap();
-        }
-    }
 
     fn port(fake: &Fake, ib: &str, number: u32, mask: &str, gid: &str) {
         let path = fake
@@ -298,6 +287,10 @@ mod tests {
         fs::write(path.join("cap_mask"), mask).unwrap();
         fs::write(path.join("link_layer"), "InfiniBand\n").unwrap();
         fs::write(path.join("gids/0"), gid).unwrap();
+    }
+
+    fn management_ports(fake: &Fake) -> io::Result<Vec<ManagementPort>> {
+        discover(&fake.sysfs)?.management_ports(&fake.sysfs)
     }
 
     #[test]
@@ -345,6 +338,7 @@ mod tests {
                 .collect::<Vec<_>>()
         );
         assert_eq!(discover_switches(&fake.sysfs).unwrap(), topology.switches);
+        assert_eq!(topology.fabric().collect::<Vec<_>>(), topology.switches);
     }
 
     #[rstest]
@@ -363,16 +357,16 @@ mod tests {
         }
         // Only the two LPFs carry SW_MNG, but all four present PFs belong.
         for function in [3, 1, 2, 0] {
-            mlx(&fake, &format!("0000:05:00.{function}"), function < 2);
+            fake.add_connectx(&format!("0000:05:00.{function}"), function < 2);
         }
-        mlx(&fake, "0000:05:00.5", true);
+        fake.add_connectx("0000:05:00.5", true);
         std::os::unix::fs::symlink(
             fake.device("0000:05:00.0"),
             fake.device("0000:05:00.5").join("physfn"),
         )
         .unwrap();
-        mlx(&fake, "0000:06:00.0", false);
-        mlx(&fake, "0001:05:00.0", false);
+        fake.add_connectx("0000:06:00.0", false);
+        fake.add_connectx("0001:05:00.0", false);
         fake.add_pci_device("0000:05:00.4", 0x8086, 1, 0x020000, None);
         let topology = discover(&fake.sysfs).unwrap();
         assert_eq!(topology.gpus.len(), gpu_count as usize);
@@ -408,7 +402,7 @@ mod tests {
         let fake = testfs::fake();
         fake.add_pci_device("0000:04:00.0", 0x10de, 0x20b0, 0x030200, None);
         fake.add_pci_device("0000:03:00.0", 0x10de, 0x2b85, 0x030000, None);
-        mlx(&fake, "0000:02:00.0", false);
+        fake.add_connectx("0000:02:00.0", false);
         fs::write(fake.device("0000:02:00.0").join("vpd"), b"malformed").unwrap();
         assert_eq!(
             discover_gpus(&fake.sysfs, None).unwrap(),
@@ -477,8 +471,9 @@ mod tests {
     #[test]
     fn unreadable_oversized_and_corrupt_vpd_do_not_hide_management_devices() {
         let fake = testfs::fake();
-        mlx(&fake, "0000:05:00.0", false);
+        fake.add_connectx("0000:05:00.0", false);
         let path = fake.device("0000:05:00.0").join("vpd");
+        fs::remove_file(&path).unwrap();
         fs::create_dir(&path).unwrap();
         assert!(discover(&fake.sysfs).is_err());
         fs::remove_dir(&path).unwrap();
@@ -498,7 +493,7 @@ mod tests {
             ("0000:05:00.2", false),
             ("0000:01:00.0", false),
         ] {
-            mlx(&fake, bdf, marker);
+            fake.add_connectx(bdf, marker);
         }
         fake.add_infiniband("mlx5_0", "0000:01:00.0", "1: CA", ""); // Must not win first-port selection.
         fake.add_infiniband("mlx5_1", "0000:05:00.2", "1: CA", "");
@@ -521,7 +516,7 @@ mod tests {
         .unwrap();
         fs::create_dir(fake.sysfs.infiniband().join("mlx5_9/ports/not-a-port")).unwrap();
         fs::create_dir(fake.sysfs.infiniband().join("no-pci-link")).unwrap();
-        let ports = discover_management_ports(&fake.sysfs).unwrap();
+        let ports = management_ports(&fake).unwrap();
         assert_eq!(
             ports.iter().map(|p| (p.port, p.guid)).collect::<Vec<_>>(),
             [(2, 0x10002), (10, 0x9c63c00300e56b5c)]
@@ -529,10 +524,10 @@ mod tests {
         assert!(ports
             .iter()
             .all(|p| p.pci_bdf == "0000:05:00.0" && p.ib_device == "mlx5_9"));
-        assert_eq!(format!("0x{:016x}", ports[0].guid), "0x0000000000010002");
+        assert_eq!(ports[0].guid_string(), "0x0000000000010002");
         // Firmware capability, not function number, decides SM eligibility.
         port(&fake, "mlx5_1", 1, "0", "fe80::2");
-        assert_eq!(discover_management_ports(&fake.sysfs).unwrap().len(), 3);
+        assert_eq!(management_ports(&fake).unwrap().len(), 3);
     }
 
     #[rstest]
@@ -546,10 +541,10 @@ mod tests {
         #[case] file: &str,
     ) {
         let fake = testfs::fake();
-        mlx(&fake, "0000:05:00.0", true);
+        fake.add_connectx("0000:05:00.0", true);
         fake.add_infiniband("mlx5_0", "0000:05:00.0", "1: CA", "");
         port(&fake, "mlx5_0", 1, mask, gid);
-        let error = discover_management_ports(&fake.sysfs).unwrap_err();
+        let error = management_ports(&fake).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
         assert!(error.to_string().contains(file), "{error}");
     }
@@ -558,11 +553,11 @@ mod tests {
     fn missing_ib_tree_is_distinct_from_no_eligible_ports() {
         let fake = testfs::fake();
         assert_eq!(
-            discover_management_ports(&fake.sysfs).unwrap_err().kind(),
+            management_ports(&fake).unwrap_err().kind(),
             io::ErrorKind::NotFound
         );
         fs::create_dir_all(fake.sysfs.infiniband()).unwrap();
-        assert!(discover_management_ports(&fake.sysfs).unwrap().is_empty());
+        assert!(management_ports(&fake).unwrap().is_empty());
     }
 
     #[rstest]
@@ -571,13 +566,44 @@ mod tests {
     #[case::gid("gids/0")]
     fn missing_port_attributes_are_not_silently_skipped(#[case] file: &str) {
         let fake = testfs::fake();
-        mlx(&fake, "0000:05:00.0", true);
+        fake.add_connectx("0000:05:00.0", true);
         fake.add_infiniband("mlx5_0", "0000:05:00.0", "1: CA", "");
         port(&fake, "mlx5_0", 1, "0", "fe80::1");
         fs::remove_file(fake.sysfs.infiniband().join("mlx5_0/ports/1").join(file)).unwrap();
         assert_eq!(
-            discover_management_ports(&fake.sysfs).unwrap_err().kind(),
+            management_ports(&fake).unwrap_err().kind(),
             io::ErrorKind::NotFound
         );
+    }
+
+    // SECURITY.md of NVRC rests on this: only the absence of the attribute
+    // means no role, anything else about the VPD that is wrong is an error.
+    #[test]
+    fn a_mellanox_function_without_vpd_is_not_a_management_function() {
+        let fake = testfs::fake();
+        fake.add_pci_device("0000:05:00.0", 0x15b3, 0x1021, 0x020700, None);
+        assert!(discover(&fake.sysfs)
+            .unwrap()
+            .management_functions
+            .is_empty());
+    }
+
+    #[test]
+    fn ports_come_from_the_topology_given_not_from_a_rescan() {
+        let fake = testfs::fake();
+        fake.add_connectx("0000:05:00.0", true);
+        let topology = discover(&fake.sysfs).unwrap();
+        // The function vanishes from PCI; the topology in hand still names it.
+        fs::remove_dir_all(fake.device("0000:05:00.0")).unwrap();
+        fake.add_infiniband("mlx5_0", "0000:05:00.0", "1: CA", "");
+        port(&fake, "mlx5_0", 1, "0", "fe80::1");
+        assert_eq!(
+            topology.management_ports(&fake.sysfs).unwrap()[0].guid_string(),
+            "0x0000000000000001"
+        );
+        assert!(Topology::default()
+            .management_ports(&fake.sysfs)
+            .unwrap()
+            .is_empty());
     }
 }

@@ -69,13 +69,7 @@ impl Fake {
         driver: Option<&str>,
     ) {
         self.add_device(address, driver);
-
-        let path = self.device(address);
-        fs::write(path.join("vendor"), format!("{vendor:#06x}\n")).unwrap();
-        fs::write(path.join("subsystem_vendor"), format!("{vendor:#06x}\n")).unwrap();
-        fs::write(path.join("device"), format!("{device:#06x}\n")).unwrap();
-        fs::write(path.join("class"), format!("{class:#08x}\n")).unwrap();
-        fs::write(path.join("numa_node"), "0\n").unwrap();
+        pci_function(&self.sysfs, address, vendor, device, class);
     }
 
     /// Everything [`crate::PciDev`] reads to open a function: identity,
@@ -101,6 +95,15 @@ impl Fake {
         fs::create_dir(path.join("power")).unwrap();
         fs::write(path.join("power/control"), "auto\n").unwrap();
         fs::write(path.join("power/runtime_status"), "active\n").unwrap();
+    }
+
+    /// A ConnectX-7 InfiniBand function with the VPD of the management
+    /// ConnectX when `sw_mng`, of a data-path NIC otherwise.  Every real
+    /// ConnectX has a VPD; a function without the attribute is its own case.
+    pub fn add_connectx(&self, address: &str, sw_mng: bool) {
+        let (vendor, device, class) = CONNECTX7_IB;
+        self.add_pci_device(address, vendor, device, class, None);
+        write_va(&self.device(address), sw_mng);
     }
 
     pub fn set_register(&self, address: &str, offset: u64, value: u32) {
@@ -176,24 +179,86 @@ fn read(path: PathBuf) -> String {
     fs::read_to_string(path).unwrap_or_default()
 }
 
-/// Add one fake cdev `vfio<n>` with the given sysfs `vendor`, `device`, and
-/// `class` contents (as sysfs prints them, e.g. "0x10de", "0x2330",
-/// "0x030200").
+/// The attributes a PCI function carries, written the way sysfs prints them,
+/// under `bus/pci/devices/<address>`.  Both fixture families write a function
+/// through here, so there is one description of one.
+fn pci_function(sysfs: &Sysfs, address: &str, vendor: u16, device: u16, class: u32) -> PathBuf {
+    let path = sysfs.device(address).expect("a PCI address");
+    fs::create_dir_all(&path).unwrap();
+    fs::write(path.join("vendor"), format!("{vendor:#06x}\n")).unwrap();
+    fs::write(path.join("subsystem_vendor"), format!("{vendor:#06x}\n")).unwrap();
+    fs::write(path.join("device"), format!("{device:#06x}\n")).unwrap();
+    fs::write(path.join("class"), format!("{class:#08x}\n")).unwrap();
+    fs::write(path.join("numa_node"), "0\n").unwrap();
+    path
+}
+
+/// A ConnectX-7 as an InfiniBand controller: vendor, device, 24-bit class.
+const CONNECTX7_IB: (u16, u16, u32) = (0x15b3, 0x1021, 0x020700);
+
+/// Add one fake cdev `vfio<n>` with the given PCI `vendor`, `device` and
+/// 24-bit `class`.  The function sits alone on bus `n & 0xff` of domain
+/// `n >> 8`, so every cdev number below 2^24 gets an address of its own;
+/// [`add_at`] places it.
 ///
 /// `root` is both the `/dev/vfio` and the sysfs root: the cdev lands at
-/// `<root>/devices/vfio<n>` and its identity under `<root>/class/vfio-dev/`,
+/// `<root>/devices/vfio<n>` and its function under `<root>/bus/pci/devices`,
 /// so a caller passes `root` and `Sysfs::new(root)` to the same tree.
-pub fn add(root: &Path, n: u32, vendor: &str, device: &str, class: &str) {
+pub fn add(root: &Path, n: u32, vendor: u16, device: u16, class: u32) {
+    let address = format!("{:04x}:{:02x}:00.0", n >> 8, n & 0xff);
+    add_at(root, n, &address, vendor, device, class);
+}
+
+/// [`add`] at a chosen address, so a test can put several functions on one
+/// slot.  Laid out the way the kernel does it: the function under
+/// `bus/pci/devices/<address>` carries the identity, and
+/// `class/vfio-dev/vfio<n>/device` links to it.  Returns the function's
+/// directory, for the attributes a test is about.
+pub fn add_at(root: &Path, n: u32, address: &str, vendor: u16, device: u16, class: u32) -> PathBuf {
     let devices = root.join("devices");
     fs::create_dir_all(&devices).unwrap();
     fs::write(devices.join(format!("vfio{n}")), b"").unwrap();
-    let dev_dir = Sysfs::new(root)
-        .vfio_dev(&format!("vfio{n}"))
-        .join("device");
-    fs::create_dir_all(&dev_dir).unwrap();
-    fs::write(dev_dir.join("vendor"), format!("{vendor}\n")).unwrap();
-    fs::write(dev_dir.join("device"), format!("{device}\n")).unwrap();
-    fs::write(dev_dir.join("class"), format!("{class}\n")).unwrap();
+    let sysfs = Sysfs::new(root);
+    let function = pci_function(&sysfs, address, vendor, device, class);
+    let vfio_dev = sysfs.vfio_dev(&format!("vfio{n}"));
+    fs::create_dir_all(&vfio_dev).unwrap();
+    // Relative to the link, as the kernel spells it, so the tree reads the
+    // same from any working directory when `root` is a relative path.
+    let target = Path::new("../../../bus/pci/devices").join(function.file_name().unwrap());
+    std::os::unix::fs::symlink(target, vfio_dev.join("device")).unwrap();
+    function
+}
+
+/// A ConnectX-7 InfiniBand function as cdev `vfio<n>`, with the VPD of the
+/// management ConnectX when `sw_mng`, of a data-path NIC otherwise.
+pub fn add_connectx(root: &Path, n: u32, address: &str, sw_mng: bool) {
+    let (vendor, device, class) = CONNECTX7_IB;
+    let function = add_at(root, n, address, vendor, device, class);
+    write_va(&function, sw_mng);
+}
+
+/// The `VA` field NVIDIA's HGX Shared NVSwitch guide (19.0, section 2.5.2.2)
+/// shows on the management ConnectX, as `lspci -vv` prints it.
+pub const SW_MNG: &[u8] = b"MLX:MN=MLNX:CSKU=V2:UUID=V3:PCI=V0:SMDL=SW_MNG:MODL=C7010Z";
+
+/// The same field on a data-path ConnectX: the vendor fields, no `SMDL` role.
+const DATA_PATH: &[u8] = b"MLX:MN=MLNX:CSKU=V2:UUID=V3:PCI=V0";
+
+/// A VPD of one read-only resource holding one keyword, then the end tag.
+pub fn vpd(keyword: &[u8; 2], value: &[u8]) -> Vec<u8> {
+    let length = (value.len() + 3) as u16;
+    let mut data = vec![0x90];
+    data.extend(length.to_le_bytes());
+    data.extend(keyword);
+    data.push(value.len() as u8);
+    data.extend(value);
+    data.push(0x78);
+    data
+}
+
+fn write_va(function: &Path, sw_mng: bool) {
+    let va = if sw_mng { SW_MNG } else { DATA_PATH };
+    fs::write(function.join("vpd"), vpd(b"VA", va)).unwrap();
 }
 
 #[cfg(test)]
@@ -209,5 +274,72 @@ mod tests {
         let driver = fake.driver("vfio-pci");
         assert!(driver.join("0000:65:00.0").is_symlink());
         assert!(!driver.join("65:00.0").exists());
+    }
+
+    /// The identity lives on the function; the vfio-dev entry only links to
+    /// it, as the kernel lays it out: a relative link, so the tree does not
+    /// depend on where `root` was spelled from.
+    #[test]
+    fn a_cdev_links_to_the_function_that_carries_its_identity() {
+        let root = tempfile::tempdir().unwrap();
+        add(root.path(), 42, 0x10de, 0x2330, 0x030200);
+
+        let sysfs = Sysfs::new(root.path());
+        let device = sysfs.vfio_dev("vfio42").join("device");
+        assert_eq!(
+            fs::read_link(&device).unwrap(),
+            Path::new("../../../bus/pci/devices/0000:2a:00.0")
+        );
+        assert_eq!(
+            fs::canonicalize(&device).unwrap(),
+            fs::canonicalize(sysfs.device("0000:2a:00.0").unwrap()).unwrap()
+        );
+        assert_eq!(read(device.join("vendor")), "0x10de\n");
+    }
+
+    /// Cdev numbers are independent of PCI bus numbers, so the fixture must
+    /// not run out of addresses at 256.
+    #[test]
+    fn every_cdev_number_gets_an_address_of_its_own() {
+        let root = tempfile::tempdir().unwrap();
+        for n in [255, 256, 0x1_00ff] {
+            add(root.path(), n, 0x10de, 0x2330, 0x030200);
+        }
+
+        let devs = crate::enumerate_iommufd(root.path(), &Sysfs::new(root.path()));
+        assert_eq!(
+            devs.iter().map(|dev| dev.bdf.as_str()).collect::<Vec<_>>(),
+            ["0000:ff:00.0", "0001:00:00.0", "0100:ff:00.0"]
+        );
+    }
+
+    /// Both fixture families describe the management ConnectX the same
+    /// way, so the cdevs one enumerates are the functions a topology scan
+    /// names.
+    #[test]
+    fn a_connectx_cdev_is_the_function_the_scan_names() {
+        let root = tempfile::tempdir().unwrap();
+        add_connectx(root.path(), 1, "0000:05:00.0", true);
+        add_connectx(root.path(), 2, "0000:05:00.1", false);
+
+        let sysfs = Sysfs::new(root.path());
+        let cdevs = crate::enumerate_iommufd(root.path(), &sysfs);
+        let topology = crate::nvlink::discover(&sysfs).unwrap();
+        assert_eq!(
+            cdevs.iter().map(|dev| dev.bdf.as_str()).collect::<Vec<_>>(),
+            topology
+                .management_functions
+                .iter()
+                .map(|function| function.bdf.as_str())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            topology
+                .management_functions
+                .iter()
+                .map(|function| function.sw_mng)
+                .collect::<Vec<_>>(),
+            [true, false]
+        );
     }
 }

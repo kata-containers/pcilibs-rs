@@ -41,6 +41,18 @@ impl Topology {
             !self.management_functions.is_empty(),
         )
     }
+
+    /// The NVSwitch fabric a Service VM is given whole (HGX guide 19.0,
+    /// section 3.2.2): the switch chips where the platform exposes them as
+    /// PCI functions, the management ConnectX PFs where it does not.  The
+    /// device plugin on the host and NVRC in the guest both read the
+    /// fabric's membership from here.
+    pub fn fabric(&self) -> impl Iterator<Item = &str> {
+        self.switches
+            .iter()
+            .map(String::as_str)
+            .chain(self.management_functions.iter().map(|f| f.bdf.as_str()))
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -154,23 +166,12 @@ pub fn discover_topology(sysfs: &Sysfs) -> io::Result<Topology> {
 mod tests {
     use super::*;
     use crate::nvlink::NVIDIA;
-    use crate::testfs::{self, Fake};
-
-    fn mlx(fake: &Fake, bdf: &str, marker: bool) {
-        fake.add_pci_device(bdf, 0x15b3, 0x1021, 0x020700, None);
-        if marker {
-            fs::write(
-                fake.device(bdf).join("vpd"),
-                b"\x90\x0e\x00VA\x0bSMDL=SW_MNG\x78",
-            )
-            .unwrap();
-        }
-    }
+    use crate::testfs;
 
     #[test]
     fn platform_preserves_the_service_vm_interface_without_gpus() {
         let fake = testfs::fake();
-        mlx(&fake, "0000:05:00.0", true);
+        fake.add_connectx("0000:05:00.0", true);
         let detected = discover(&fake.sysfs).unwrap();
         assert_eq!(detected.platform.kind, crate::platform::Kind::Unknown);
         assert_eq!(
@@ -179,12 +180,33 @@ mod tests {
         );
         assert_eq!(detected.platform.gpu_count, 0);
         assert_eq!(detected.topology.management_functions.len(), 1);
+        assert_eq!(
+            detected.topology.fabric().collect::<Vec<_>>(),
+            ["0000:05:00.0"]
+        );
+    }
+
+    #[test]
+    fn fabric_is_the_switch_chips_then_the_management_pfs() {
+        let topology = Topology {
+            gpus: Vec::new(),
+            switches: vec!["0000:03:00.0".to_owned(), "0000:04:00.0".to_owned()],
+            management_functions: vec![ManagementFunction {
+                bdf: "0000:05:00.0".to_owned(),
+                sw_mng: true,
+            }],
+        };
+        assert_eq!(
+            topology.fabric().collect::<Vec<_>>(),
+            ["0000:03:00.0", "0000:04:00.0", "0000:05:00.0"]
+        );
+        assert_eq!(Topology::default().fabric().count(), 0);
     }
 
     #[test]
     fn subsystem_identity_refines_the_managed_fabric_family() {
         let fake = testfs::fake();
-        mlx(&fake, "0000:05:00.0", true);
+        fake.add_connectx("0000:05:00.0", true);
         let bdf = "0000:40:00.0";
         fake.add_pci_device(bdf, 0x10de, 0x3002, 0x030200, None);
         fs::write(fake.device(bdf).join("subsystem_device"), "0x2277").unwrap();
@@ -296,7 +318,7 @@ mod tests {
     #[test]
     fn loaded_extensions_reach_sysfs_discovery_without_changing_defaults() {
         let fake = testfs::fake();
-        mlx(&fake, "0000:05:00.0", true);
+        fake.add_connectx("0000:05:00.0", true);
         let bdf = "0000:40:00.0";
         fake.add_pci_device(bdf, 0x10de, 0xffff, 0x030200, None);
         fs::write(fake.device(bdf).join("subsystem_device"), "0x1234").unwrap();

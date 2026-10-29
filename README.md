@@ -188,12 +188,13 @@ fn inspect_hardware() -> std::io::Result<()> {
     println!("NVIDIA GPUs: {}", topology.gpus_by_vendor(Some(nvlink::NVIDIA)).count());
     println!("Direct NVSwitches: {:?}", topology.switches);
     println!("Management PFs: {:?}", topology.management_functions);
+    println!("Service VM fabric: {:?}", topology.fabric().collect::<Vec<_>>());
 
-    // Port GUIDs exist only after RDMA drivers register their devices.
-    let ports = nvlink::discover_management_ports(&sysfs)?;
+    // Port GUIDs exist only after RDMA drivers register their devices; the
+    // PCI scan above is not repeated.
+    let ports = topology.management_ports(&sysfs)?;
     if let Some(port) = ports.first() {
-        let guid = format!("0x{:016x}", port.guid);
-        println!("{} port {}: {guid}", port.ib_device, port.port);
+        println!("{} port {}: {}", port.ib_device, port.port, port.guid_string());
     }
     Ok(())
 }
@@ -201,15 +202,21 @@ fn inspect_hardware() -> std::io::Result<()> {
 
 For NVRC, `platform::discover()` supplies mode selection,
 `platform::discover_topology()` supplies GPU/fabric presence for driver options,
-and `nvlink::discover_management_ports()` supplies fabric startup with its GUID.
-NVRC retains its mode policy and daemon/module startup. No external discovery
-commands or new dependencies are required.
+and `topology.management_ports()` supplies fabric startup with its GUID, spelled
+for NVLSM and FM by `port.guid_string()`. NVRC retains its mode policy and
+daemon/module startup. No external discovery commands or new dependencies are
+required.
 
 `topology.gpus` lists every vendor's VGA or 3D controller function, so a
 foreign GPU classifies the platform as unknown instead of vanishing. The
 vendor filters `discover_gpus(&sysfs, vendor)` and
 `topology.gpus_by_vendor(vendor)` keep every vendor for `None`; an NVIDIA init
 passes `Some(nvlink::NVIDIA)` for its driver and service decisions.
+`topology.fabric()` is the passthrough list of the HGX guide's section 3.2.2,
+the switch chips where they are PCI functions and the management ConnectX PFs
+where they are not, so the device plugin on the host and NVRC in the guest
+take the fabric's membership from one place. `slot(bdf)` is the address
+without its function, which sibling functions share.
 
 H100/H200 switches are NVIDIA Other Bridge PCI functions. B200/B300 management
 ConnectX PFs are identified by the exact `SMDL=SW_MNG` field in PCI VPD, then
