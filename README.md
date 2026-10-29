@@ -190,11 +190,11 @@ fn inspect_hardware() -> std::io::Result<()> {
     println!("Management PFs: {:?}", topology.management_functions);
     println!("Service VM fabric: {:?}", topology.fabric().collect::<Vec<_>>());
 
-    // Port GUIDs exist only after RDMA drivers register their devices.
-    let ports = nvlink::discover_management_ports(&sysfs)?;
+    // Port GUIDs exist only after RDMA drivers register their devices; the
+    // PCI scan above is not repeated.
+    let ports = topology.management_ports(&sysfs)?;
     if let Some(port) = ports.first() {
-        let guid = format!("0x{:016x}", port.guid);
-        println!("{} port {}: {guid}", port.ib_device, port.port);
+        println!("{} port {}: {}", port.ib_device, port.port, port.guid_string());
     }
     Ok(())
 }
@@ -202,9 +202,10 @@ fn inspect_hardware() -> std::io::Result<()> {
 
 For NVRC, `platform::discover()` supplies mode selection,
 `platform::discover_topology()` supplies GPU/fabric presence for driver options,
-and `nvlink::discover_management_ports()` supplies fabric startup with its GUID.
-NVRC retains its mode policy and daemon/module startup. No external discovery
-commands or new dependencies are required.
+and `topology.management_ports()` supplies fabric startup with its GUID, spelled
+for NVLSM and FM by `port.guid_string()`. NVRC retains its mode policy and
+daemon/module startup. No external discovery commands or new dependencies are
+required.
 
 `topology.gpus` lists every vendor's VGA or 3D controller function, so a
 foreign GPU classifies the platform as unknown instead of vanishing. The
