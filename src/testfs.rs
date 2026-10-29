@@ -97,14 +97,13 @@ impl Fake {
         fs::write(path.join("power/runtime_status"), "active\n").unwrap();
     }
 
-    /// A ConnectX-7 InfiniBand function, carrying the VPD role marker of the
-    /// management ConnectX when `sw_mng`.
+    /// A ConnectX-7 InfiniBand function with the VPD of the management
+    /// ConnectX when `sw_mng`, of a data-path NIC otherwise.  Every real
+    /// ConnectX has a VPD; a function without the attribute is its own case.
     pub fn add_connectx(&self, address: &str, sw_mng: bool) {
         let (vendor, device, class) = CONNECTX7_IB;
         self.add_pci_device(address, vendor, device, class, None);
-        if sw_mng {
-            mark_sw_mng(&self.device(address));
-        }
+        write_va(&self.device(address), sw_mng);
     }
 
     pub fn set_register(&self, address: &str, offset: u64, value: u32) {
@@ -230,19 +229,20 @@ pub fn add_at(root: &Path, n: u32, address: &str, vendor: u16, device: u16, clas
     function
 }
 
-/// A ConnectX-7 InfiniBand function as cdev `vfio<n>`, carrying the VPD role
-/// marker of the management ConnectX when `sw_mng`.
+/// A ConnectX-7 InfiniBand function as cdev `vfio<n>`, with the VPD of the
+/// management ConnectX when `sw_mng`, of a data-path NIC otherwise.
 pub fn add_connectx(root: &Path, n: u32, address: &str, sw_mng: bool) {
     let (vendor, device, class) = CONNECTX7_IB;
     let function = add_at(root, n, address, vendor, device, class);
-    if sw_mng {
-        mark_sw_mng(&function);
-    }
+    write_va(&function, sw_mng);
 }
 
 /// The `VA` field NVIDIA's HGX Shared NVSwitch guide (19.0, section 2.5.2.2)
 /// shows on the management ConnectX, as `lspci -vv` prints it.
 pub const SW_MNG: &[u8] = b"MLX:MN=MLNX:CSKU=V2:UUID=V3:PCI=V0:SMDL=SW_MNG:MODL=C7010Z";
+
+/// The same field on a data-path ConnectX: the vendor fields, no `SMDL` role.
+const DATA_PATH: &[u8] = b"MLX:MN=MLNX:CSKU=V2:UUID=V3:PCI=V0";
 
 /// A VPD of one read-only resource holding one keyword, then the end tag.
 pub fn vpd(keyword: &[u8; 2], value: &[u8]) -> Vec<u8> {
@@ -256,8 +256,9 @@ pub fn vpd(keyword: &[u8; 2], value: &[u8]) -> Vec<u8> {
     data
 }
 
-fn mark_sw_mng(function: &Path) {
-    fs::write(function.join("vpd"), vpd(b"VA", SW_MNG)).unwrap();
+fn write_va(function: &Path, sw_mng: bool) {
+    let va = if sw_mng { SW_MNG } else { DATA_PATH };
+    fs::write(function.join("vpd"), vpd(b"VA", va)).unwrap();
 }
 
 #[cfg(test)]
