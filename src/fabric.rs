@@ -46,9 +46,13 @@ use crate::platform::GpuFunction;
 use crate::{context, Sysfs};
 
 pub mod v1 {
-    //! Generated from `proto/kata/fabric/v1/fabric.proto`.
+    //! Generated from `proto/kata/fabric/v1/fabric.proto`; with the
+    //! `fabric-grpc` feature also the Publish service's two ends.
     include!(concat!(env!("OUT_DIR"), "/kata.fabric.v1.rs"));
 }
+
+#[cfg(feature = "fabric-grpc")]
+pub mod grpc;
 
 /// Environment variable naming the endpoint to publish to.  The device
 /// plugin injects it, with [`TOKEN_ENV`], into the one container it gives

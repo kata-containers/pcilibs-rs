@@ -35,7 +35,8 @@ fn generate_fabric() {
     println!("cargo:rerun-if-changed=proto");
     let descriptors = protox::compile(["proto/kata/fabric/v1/fabric.proto"], ["proto"])
         .unwrap_or_else(|error| panic!("failed to compile the fabric proto: {error}"));
-    prost_build::Config::new()
+    let mut config = prost_build::Config::new();
+    config
         .type_attribute(
             ".kata.fabric.v1",
             "#[derive(serde::Serialize, serde::Deserialize)]",
@@ -52,7 +53,15 @@ fn generate_fabric() {
         .field_attribute(
             ".kata.fabric.v1.PartitionGpu.nvlink_line_rate_mbps",
             "#[serde(rename = \"nvlinkLineRateMBps\")]",
-        )
-        .compile_fds(descriptors)
-        .unwrap_or_else(|error| panic!("failed to generate the fabric types: {error}"));
+        );
+    // One generated file either way; with the stubs it also carries the
+    // Publish service's two ends.
+    #[cfg(feature = "fabric-grpc")]
+    let generated = tonic_prost_build::configure()
+        .build_server(true)
+        .build_client(true)
+        .compile_fds_with_config(descriptors, config);
+    #[cfg(not(feature = "fabric-grpc"))]
+    let generated = config.compile_fds(descriptors);
+    generated.unwrap_or_else(|error| panic!("failed to generate the fabric types: {error}"));
 }
