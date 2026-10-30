@@ -46,7 +46,10 @@ phf = { version = "0.14", default-features = false, optional = true }
 prost = { version = "0.14", optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
 tempfile = { version = "3.19.1", optional = true }
-tonic = { version = "0.14", optional = true }
+# Only what the generated stubs reference: the server trait and the codegen
+# support.  Transport, router and channel are the consumer's choice, and
+# tonic's router would pull axum and a BSD-3-Clause matcher into this tree.
+tonic = { version = "0.14", default-features = false, features = ["codegen", "server"], optional = true }
 tonic-prost = { version = "0.14", optional = true }
 
 [build-dependencies]

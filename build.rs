@@ -60,6 +60,9 @@ fn generate_fabric() {
     let generated = tonic_prost_build::configure()
         .build_server(true)
         .build_client(true)
+        // No connect() helper: it would bind the client to tonic's transport,
+        // and each consumer dials its own way (vsock, unix socket, TCP).
+        .build_transport(false)
         .compile_fds_with_config(descriptors, config);
     #[cfg(not(feature = "fabric-grpc"))]
     let generated = config.compile_fds(descriptors);
