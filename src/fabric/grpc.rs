@@ -12,6 +12,7 @@
 use std::sync::Arc;
 
 use tonic::metadata::errors::InvalidMetadataValue;
+use tonic::metadata::MetadataValue;
 use tonic::{Request, Status};
 
 pub use super::v1::fabric_view_service_client::FabricViewServiceClient;
@@ -20,14 +21,16 @@ use super::TOKEN_METADATA_KEY;
 
 /// Attach the plugin's token to a request the way [`require_token`] reads
 /// it.  Fails only for a token that is not valid metadata, which the
-/// plugin never issues.
+/// plugin never issues.  The value is marked sensitive so HTTP/2 header
+/// compression never indexes it, which would let a peer sharing the
+/// connection recover it byte by byte.
 pub fn with_token<T>(
     mut request: Request<T>,
     token: &str,
 ) -> Result<Request<T>, InvalidMetadataValue> {
-    request
-        .metadata_mut()
-        .insert(TOKEN_METADATA_KEY, token.parse()?);
+    let mut value: MetadataValue<_> = token.parse()?;
+    value.set_sensitive(true);
+    request.metadata_mut().insert(TOKEN_METADATA_KEY, value);
     Ok(request)
 }
 
@@ -67,6 +70,11 @@ mod tests {
     fn the_issued_token_is_admitted() {
         let admit = require_token("s3cret");
         let request = with_token(Request::new(()), "s3cret").unwrap();
+        assert!(request
+            .metadata()
+            .get(TOKEN_METADATA_KEY)
+            .unwrap()
+            .is_sensitive());
         assert!(admit(request).is_ok());
     }
 
