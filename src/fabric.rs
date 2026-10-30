@@ -172,6 +172,10 @@ pub struct ResolvedPartition {
     /// Absent from Fabric Manager's unsupported list, where partitions land
     /// when their NVLinks failed.
     pub supported: bool,
+    /// No other active partition names one of its GPUs.  Fabric Manager
+    /// never activates overlapping partitions, so an overlap means the view
+    /// is wrong about those GPUs, and a GPU is handed out once.
+    pub exclusive: bool,
     /// In the view's order, which is Fabric Manager's.
     pub members: Vec<Member>,
 }
@@ -183,9 +187,10 @@ impl ResolvedPartition {
         !self.members.is_empty() && self.members.iter().all(|member| member.bdf.is_some())
     }
 
-    /// A unit a scheduler may hand out: active, supported, and all here.
+    /// A unit a scheduler may hand out: active, supported, exclusive, and
+    /// all here.
     pub fn advertisable(&self) -> bool {
-        self.active && self.supported && self.complete()
+        self.active && self.supported && self.exclusive && self.complete()
     }
 
     /// The PCI addresses of the members this host has, in member order.
@@ -206,8 +211,10 @@ pub struct Resolved {
 
 /// Map a published view onto this host's GPUs.  A module slot two GPUs
 /// claim identifies neither, so both resolve to nothing; a slot no GPU
-/// claims leaves its partitions incomplete.  `None` when the view's unit
-/// word is not one this crate knows.
+/// claims leaves its partitions incomplete; a GPU two active partitions
+/// claim makes neither exclusive.  Every active partition is resolved, so
+/// a node carved eight ways yields eight units.  `None` when the view's
+/// unit word is not one this crate knows.
 pub fn resolve(view: &v1::FabricView, gpus: &[GpuModule]) -> Option<Resolved> {
     let unit = Unit::from_view(&view.unit)?;
     let mut by_module: BTreeMap<u8, Option<&str>> = BTreeMap::new();
@@ -225,7 +232,7 @@ pub fn resolve(view: &v1::FabricView, gpus: &[GpuModule]) -> Option<Resolved> {
         .flat_map(|list| list.partition_info.iter())
         .map(|partition| partition.partition_id)
         .collect();
-    let partitions: BTreeMap<u32, ResolvedPartition> = view
+    let mut partitions: BTreeMap<u32, ResolvedPartition> = view
         .partitions
         .iter()
         .flat_map(|list| list.partition_info.iter())
@@ -247,11 +254,26 @@ pub fn resolve(view: &v1::FabricView, gpus: &[GpuModule]) -> Option<Resolved> {
                     id: partition.partition_id,
                     active: partition.is_active,
                     supported: !unsupported.contains(&partition.partition_id),
+                    exclusive: true,
                     members,
                 },
             )
         })
         .collect();
+    let mut claims: BTreeMap<u32, usize> = BTreeMap::new();
+    for member in partitions
+        .values()
+        .filter(|partition| partition.active)
+        .flat_map(|partition| partition.members.iter())
+    {
+        *claims.entry(member.physical_id).or_default() += 1;
+    }
+    for partition in partitions.values_mut().filter(|partition| partition.active) {
+        partition.exclusive = partition
+            .members
+            .iter()
+            .all(|member| claims.get(&member.physical_id) == Some(&1));
+    }
     Some(Resolved {
         unit,
         partitions: partitions.into_values().collect(),
@@ -286,6 +308,24 @@ mod tests {
             module: Some(module),
         })
         .collect()
+    }
+
+    /// The same box with SMX1 back at its slot.
+    fn rubin_gpus_complete() -> Vec<GpuModule> {
+        let mut gpus = rubin_gpus();
+        gpus.push(GpuModule {
+            bdf: "0000:f0:00.0".to_owned(),
+            module: Some(1),
+        });
+        gpus
+    }
+
+    fn rubin_view_active(unit: &str, active: &[u32]) -> v1::FabricView {
+        let mut view = rubin_view(unit);
+        for p in &mut view.partitions.as_mut().unwrap().partition_info {
+            p.is_active = active.contains(&p.partition_id);
+        }
+        view
     }
 
     fn rubin_view(unit: &str) -> v1::FabricView {
@@ -494,12 +534,72 @@ mod tests {
     }
 
     #[test]
+    fn eight_active_singles_are_eight_units() {
+        // The node carved all the way down: every GPU its own unit, 8 to 15
+        // in Fabric Manager's numbering.  With SMX1 gone from PCIe its
+        // single is the one that drops out.
+        let singles: Vec<u32> = (8..=15).collect();
+        let view = rubin_view_active("partition", &singles);
+        let resolved = resolve(&view, &rubin_gpus_complete()).unwrap();
+        let units = advertisable(&resolved);
+        assert_eq!(units.len(), 8);
+        assert_eq!(units.iter().map(|(id, _)| *id).collect::<Vec<_>>(), singles);
+        assert!(units.iter().all(|(_, bdfs)| bdfs.len() == 1));
+        assert_eq!(units[0].1, ["0000:f0:00.0"]);
+        assert_eq!(units[7].1, ["0000:62:00.0"]);
+
+        let resolved = resolve(&view, &rubin_gpus()).unwrap();
+        assert_eq!(
+            advertisable(&resolved)
+                .into_iter()
+                .map(|(id, _)| id)
+                .collect::<Vec<_>>(),
+            (9..=15).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn a_mixed_carve_resolves_every_active_partition() {
+        // One half and two pairs: three units of two sizes, all at once.
+        let view = rubin_view_active("partition", &[2, 6, 7]);
+        let resolved = resolve(&view, &rubin_gpus_complete()).unwrap();
+        assert_eq!(
+            advertisable(&resolved),
+            [
+                (
+                    2,
+                    vec![
+                        "0000:f0:00.0",
+                        "0000:bc:00.0",
+                        "0000:9a:00.0",
+                        "0000:df:00.0"
+                    ]
+                ),
+                (6, vec!["0000:73:00.0", "0000:3c:00.0"]),
+                (7, vec!["0000:1a:00.0", "0000:62:00.0"]),
+            ]
+        );
+    }
+
+    #[test]
+    fn overlapping_active_partitions_hand_out_no_gpu_twice() {
+        // Fabric Manager refuses to activate a half and a pair inside it
+        // together; a view that claims both is wrong about GPUs 1 and 2, so
+        // neither unit exists.  A single in the other half is untouched.
+        let view = rubin_view_active("partition", &[2, 4, 12]);
+        let resolved = resolve(&view, &rubin_gpus_complete()).unwrap();
+        let by_id = |id: u32| resolved.partitions.iter().find(|p| p.id == id).unwrap();
+        assert!(by_id(2).active && by_id(2).complete() && !by_id(2).exclusive);
+        assert!(by_id(4).active && by_id(4).complete() && !by_id(4).exclusive);
+        assert!(by_id(12).exclusive);
+        // Inactive partitions are not in anyone's way.
+        assert!(by_id(5).exclusive && !by_id(5).active);
+        assert_eq!(advertisable(&resolved), [(12, vec!["0000:73:00.0"])]);
+    }
+
+    #[test]
     fn rubin_half_and_pair_resolve_in_fabric_manager_order() {
-        let mut view = rubin_view("partition");
-        let list = view.partitions.as_mut().unwrap();
-        for p in &mut list.partition_info {
-            p.is_active = matches!(p.partition_id, 3 | 5);
-        }
+        let view = rubin_view_active("partition", &[3, 5]);
         let resolved = resolve(&view, &rubin_gpus()).unwrap();
         assert_eq!(
             advertisable(&resolved),
