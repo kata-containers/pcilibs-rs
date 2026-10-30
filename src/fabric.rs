@@ -592,7 +592,7 @@ mod tests {
         assert!(by_id(2).active && by_id(2).complete() && !by_id(2).exclusive);
         assert!(by_id(4).active && by_id(4).complete() && !by_id(4).exclusive);
         assert!(by_id(12).exclusive);
-        // Inactive partitions are not in anyone's way.
+        // Inactive partitions claim no GPU.
         assert!(by_id(5).exclusive && !by_id(5).active);
         assert_eq!(advertisable(&resolved), [(12, vec!["0000:73:00.0"])]);
     }
