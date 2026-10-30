@@ -39,6 +39,7 @@
 //! ```
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
 use std::fs;
 use std::io;
 
@@ -48,6 +49,33 @@ use crate::{context, Sysfs};
 pub mod v1 {
     //! Generated from `proto/kata/fabric/v1/fabric.proto`.
     include!(concat!(env!("OUT_DIR"), "/kata.fabric.v1.rs"));
+}
+
+/// The one-line log form both ends of the stream print, so a publisher's
+/// and a plugin's logs line up: the unit word, then each active partition
+/// as `id x gpus`.
+impl fmt::Display for v1::FabricView {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "unit {:?}, active partitions (id x gpus):", self.unit)?;
+        let mut active = self
+            .partitions
+            .iter()
+            .flat_map(|list| list.partition_info.iter())
+            .filter(|partition| partition.is_active)
+            .peekable();
+        if active.peek().is_none() {
+            return f.write_str(" none");
+        }
+        for partition in active {
+            write!(
+                f,
+                " {}x{}",
+                partition.partition_id,
+                partition.gpu_info.len()
+            )?;
+        }
+        Ok(())
+    }
 }
 
 /// Environment variable naming the endpoint to publish to.  The device
@@ -126,9 +154,18 @@ pub fn parse_module_label(label: &str) -> Option<u8> {
 
 /// The module slot of the GPU at `bdf`: `None` when the firmware labels the
 /// function with no slot, or not at all.  Other read errors propagate, so an
-/// unreadable sysfs never looks like an unlabeled board.
+/// unreadable sysfs never looks like an unlabeled board, and a string that
+/// is no PCI address is an error, not an unlabeled GPU.  The address is
+/// normalized like every other sysfs lookup, so `1a:00.0` and
+/// `0000:1A:00.0` name one function.
 pub fn module_slot(sysfs: &Sysfs, bdf: &str) -> io::Result<Option<u8>> {
-    let path = sysfs.devices().join(bdf).join("label");
+    let Some(device) = sysfs.device(bdf) else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{bdf:?} is not a PCI address"),
+        ));
+    };
+    let path = device.join("label");
     match fs::read_to_string(&path) {
         Ok(label) => Ok(parse_module_label(&label)),
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
@@ -441,6 +478,14 @@ mod tests {
         assert_eq!(module_slot(&fake.sysfs, labeled).unwrap(), Some(7));
         assert_eq!(module_slot(&fake.sysfs, unlabeled).unwrap(), None);
         assert!(module_slot(&fake.sysfs, unreadable).is_err());
+        // Every spelling of the address names the same function; a string
+        // that is no address is an error, not an unlabeled GPU.
+        assert_eq!(module_slot(&fake.sysfs, "1a:00.0").unwrap(), Some(7));
+        assert_eq!(module_slot(&fake.sysfs, "0000:1A:00.0").unwrap(), Some(7));
+        assert_eq!(
+            module_slot(&fake.sysfs, "not-a-bdf").unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
 
         let gpus: Vec<GpuFunction> = [labeled, unlabeled]
             .into_iter()
@@ -470,6 +515,22 @@ mod tests {
             }]
         )
         .is_err());
+    }
+
+    #[test]
+    fn a_view_prints_as_one_log_line() {
+        assert_eq!(
+            rubin_view("gpu").to_string(),
+            "unit \"gpu\", active partitions (id x gpus): 1x8"
+        );
+        assert_eq!(
+            rubin_view_active("", &[2, 6, 14]).to_string(),
+            "unit \"\", active partitions (id x gpus): 2x4 6x2 14x1"
+        );
+        assert_eq!(
+            v1::FabricView::default().to_string(),
+            "unit \"\", active partitions (id x gpus): none"
+        );
     }
 
     #[test]
