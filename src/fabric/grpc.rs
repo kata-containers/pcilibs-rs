@@ -33,7 +33,8 @@ pub fn with_token<T>(
 
 /// A server interceptor admitting only requests that carry `expected`:
 /// `FabricViewServiceServer::with_interceptor(service, require_token(token))`.
-/// A wrong token costs the same time whatever its first wrong byte.
+/// The comparison runs over every byte, so a wrong token is rejected
+/// after the same number of operations whatever its first wrong byte.
 pub fn require_token(
     expected: &str,
 ) -> impl Fn(Request<()>) -> Result<Request<()>, Status> + Clone {
