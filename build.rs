@@ -22,4 +22,37 @@ fn main() {
 
     #[cfg(feature = "std")]
     linux::generate();
+
+    #[cfg(feature = "fabric")]
+    generate_fabric();
+}
+
+/// The fabric view wire types, from the proto with serde derives, so the
+/// JSON a client prints and the message it streams are one schema.  The
+/// names are fmpm's, so the HGX guide's shell snippets keep working.
+#[cfg(feature = "fabric")]
+fn generate_fabric() {
+    println!("cargo:rerun-if-changed=proto");
+    let descriptors = protox::compile(["proto/kata/fabric/v1/fabric.proto"], ["proto"])
+        .unwrap_or_else(|error| panic!("failed to compile the fabric proto: {error}"));
+    prost_build::Config::new()
+        .type_attribute(
+            ".kata.fabric.v1",
+            "#[derive(serde::Serialize, serde::Deserialize)]",
+        )
+        .type_attribute(".kata.fabric.v1", "#[serde(rename_all = \"camelCase\")]")
+        .field_attribute(
+            ".kata.fabric.v1.PartitionGpu.num_nvlinks_available",
+            "#[serde(rename = \"numNvLinksAvailable\")]",
+        )
+        .field_attribute(
+            ".kata.fabric.v1.PartitionGpu.max_num_nvlinks",
+            "#[serde(rename = \"maxNumNvLinks\")]",
+        )
+        .field_attribute(
+            ".kata.fabric.v1.PartitionGpu.nvlink_line_rate_mbps",
+            "#[serde(rename = \"nvlinkLineRateMBps\")]",
+        )
+        .compile_fds(descriptors)
+        .unwrap_or_else(|error| panic!("failed to generate the fabric types: {error}"));
 }

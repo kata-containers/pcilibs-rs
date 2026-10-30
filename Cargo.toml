@@ -26,6 +26,12 @@ testfs = ["std", "dep:tempfile"]
 # a consumer that only enumerates devices should not pull anyhow, and should
 # not have to care that this exists.
 cc = ["std", "dep:anyhow", "anyhow/std"]
+# The NVLink fabric partition view a Service VM publishes and a host maps onto
+# its GPUs: proto-generated wire types with serde, the firmware slot-label
+# bridge from physical ID to PCI address, and the resolution.  Off by default:
+# it pulls prost and serde, and generates code at build time (with protox, so
+# no protoc is needed).
+fabric = ["std", "dep:prost", "dep:serde", "dep:prost-build", "dep:protox"]
 
 [dependencies]
 anyhow = { version = "1", default-features = false, optional = true }
@@ -33,6 +39,8 @@ anyhow = { version = "1", default-features = false, optional = true }
 libc = { version = "0.2", default-features = false, optional = true }
 nix = { version = "0.31.3", default-features = false, features = ["fs"], optional = true }
 phf = { version = "0.14", default-features = false, optional = true }
+prost = { version = "0.14", optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
 tempfile = { version = "3.19.1", optional = true }
 
 [build-dependencies]
@@ -40,9 +48,12 @@ nom = { version = "8.0", default-features = false, optional = true }
 phf_codegen = { version = "0.14", optional = true }
 quote = { version = "1.0", default-features = false, optional = true }
 proc-macro2 = { version = "1.0", default-features = false, optional = true }
+prost-build = { version = "0.14", optional = true }
+protox = { version = "0.10", optional = true }
 
 [dev-dependencies]
 rstest = "0.28"
+serde_json = "1"
 tempfile = "3.19.1"
 
 [[example]]
