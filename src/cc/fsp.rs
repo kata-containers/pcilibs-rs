@@ -109,14 +109,18 @@ impl<'a> FspRpc<'a> {
     }
 
     pub fn knob_read(&self, knob: u32) -> Result<u16> {
-        let data = self.prc_cmd(&[0xc | 0x2 << 8 | knob << 16])?;
-        ensure!(data.len() == 1, "knob {knob} read: bad response {data:x?}");
+        let (data, bytes) = self.prc_cmd(&[0xc | 0x2 << 8 | knob << 16])?;
+        // Rounded-up MNOC words may contain only one byte of the knob value.
+        ensure!(
+            data.len() == 1 && bytes >= 22,
+            "knob {knob} read: bad response {data:x?} ({bytes} bytes)"
+        );
         // The value is 16 bits; the upper half is not zero-initialized.
         Ok(data[0] as u16)
     }
 
     pub fn knob_write(&self, knob: u32, value: u16) -> Result<()> {
-        let data = self.prc_cmd(&[0xd | 0x2 << 8 | knob << 16, value as u32])?;
+        let (data, _) = self.prc_cmd(&[0xd | 0x2 << 8 | knob << 16, value as u32])?;
         ensure!(data.is_empty(), "knob {knob} write: bad response {data:x?}");
         Ok(())
     }
@@ -128,12 +132,14 @@ impl<'a> FspRpc<'a> {
         Ok(())
     }
 
-    fn prc_cmd(&self, payload: &[u32]) -> Result<Vec<u32>> {
+    fn prc_cmd(&self, payload: &[u32]) -> Result<(Vec<u32>, u32)> {
         let packet = mctp_packet(NVDM_PRC, payload);
-        let response = match self {
+        let (response, bytes) = match self {
             Self::Emem(dev) => {
                 emem_send(dev, &packet)?;
-                emem_receive(dev)?
+                let response = emem_receive(dev)?;
+                let bytes = response.len() as u32 * 4;
+                (response, bytes)
             }
             Self::Mnoc(dev) => {
                 mnoc_send(dev, &packet)?;
@@ -153,7 +159,7 @@ impl<'a> FspRpc<'a> {
         if response[4] != 0 {
             return Err(FspError { code: response[4] }.into());
         }
-        Ok(response[5..].to_vec())
+        Ok((response[5..].to_vec(), bytes))
     }
 }
 
@@ -253,7 +259,7 @@ fn mnoc_send(dev: &PciDev, data: &[u32]) -> Result<()> {
     Ok(())
 }
 
-fn mnoc_receive(dev: &PciDev) -> Result<Vec<u32>> {
+fn mnoc_receive(dev: &PciDev) -> Result<(Vec<u32>, u32)> {
     if let Err(err) = poll("FSP MNOC response", Duration::from_secs(5), || {
         dev.read32(MNOC_INFO_SEND) & MNOC_READY != 0
     }) {
@@ -270,12 +276,14 @@ fn mnoc_receive(dev: &PciDev) -> Result<Vec<u32>> {
         bytes <= 1024,
         "FSP MNOC response too large: {bytes:#x} bytes"
     );
-    let data = (0..bytes / 4)
+    // GB202 knob replies have a 16-bit payload. Like gpu-admin-tools
+    // gpu/mnoc.py, consume the final word even when only part of it is valid.
+    let data = (0..bytes.div_ceil(4))
         .map(|_| dev.read32(MNOC_RDATA_SEND))
         .collect();
     let info = dev.read32(MNOC_INFO_SEND);
     ensure!(info & MNOC_ERROR == 0, "FSP MNOC receive error: {info:#x}");
-    Ok(data)
+    Ok((data, bytes))
 }
 
 /// A model of the FSP behind either mailbox, for tests across the crate.
@@ -321,6 +329,8 @@ pub(crate) mod fake {
         Short,
         /// One payload dword too many: two for a read, one for a write.
         ExtraDword,
+        /// The MNOC byte count advertised for a successful knob read.
+        KnobReplyBytes(u32),
         /// More than the channel can carry.
         Oversized,
         /// No answer at all.
@@ -568,7 +578,15 @@ pub(crate) mod fake {
                 _ => {}
             }
             let response = self.answer(&command, fault);
-            self.info_send = MNOC_READY | (response.len() as u32 * 4);
+            let mut bytes = response.len() as u32 * 4;
+            // GB202 reports the 16-bit knob payload without dword padding.
+            if command[2] & 0xff == PRC_READ && response.len() == 6 && response[4] == 0 {
+                bytes = match fault {
+                    Some(Fault::KnobReplyBytes(bytes)) => bytes,
+                    _ => bytes - 2,
+                };
+            }
+            self.info_send = MNOC_READY | bytes;
             self.response = response.into();
         }
 
@@ -700,6 +718,42 @@ mod tests {
         let dev = device(&fsp);
 
         assert_eq!(fsp.rpc(&dev).unwrap().knob_read(KNOB_CCM).unwrap(), 3);
+    }
+
+    #[rstest]
+    #[case::off(0)]
+    #[case::on(1)]
+    #[case::devtools(3)]
+    fn mnoc_reads_complete_knob_values(#[case] value: u16, #[values(22, 23, 24)] bytes: u32) {
+        let fsp = Fsp::mnoc();
+        fsp.set_knob(KNOB_CCM, value);
+        fsp.fail(Fault::KnobReplyBytes(bytes));
+        let dev = device(&fsp);
+        let rpc = FspRpc::mnoc(&dev);
+
+        assert_eq!(rpc.knob_read(KNOB_CCM).unwrap(), value);
+        assert_eq!(dev.read32(MNOC_INFO_SEND) & MNOC_SIZE_MASK, bytes);
+        rpc.knob_write(KNOB_CCM, value).unwrap();
+        assert_eq!(rpc.knob_read(KNOB_CCM).unwrap(), value);
+    }
+
+    #[rstest]
+    #[case::no_value(20)]
+    #[case::only_low_byte(21)]
+    fn mnoc_rejects_incomplete_knob_values_without_writing(
+        #[case] bytes: u32,
+        #[values(0, 0x0100)] value: u16,
+    ) {
+        let fsp = Fsp::mnoc();
+        fsp.set_knob(KNOB_CCM, value);
+        fsp.fail(Fault::KnobReplyBytes(bytes));
+        let dev = device(&fsp);
+        let rpc = FspRpc::mnoc(&dev);
+
+        let err = rpc.knob_read(KNOB_CCM).unwrap_err().to_string();
+        assert!(err.contains("knob 8 read: bad response"), "{err}");
+        assert!(rpc.knob_check_and_write(KNOB_CCM, 0).is_err());
+        assert_eq!(fsp.writes(), 0);
     }
 
     /// These knobs live in flash, so one already at the value asked for is
