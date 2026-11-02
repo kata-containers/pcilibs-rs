@@ -172,6 +172,42 @@ has to be present — which is what lets a mode be set on a GPU that is already
 bound to `vfio-pci`. Enabling the feature adds `anyhow`; a consumer that only
 enumerates devices pulls neither it nor this code.
 
+### `pcie` — configuration space and the ports between peers
+
+`pcilibs_rs::pcie` reads and writes a function's configuration space through
+its sysfs `config` file and walks the bus the way the kernel nests it, so a
+provisioner can set up the PCIe peer-to-peer path GPUDirect RDMA takes between
+a passthrough GPU and the NIC beside it:
+
+```rust,no_run
+use pcilibs_rs::pcie::{self, Config, ACS_DIRECT_TRANSLATED};
+use pcilibs_rs::Sysfs;
+
+fn direct_p2p(gpu: &str) -> std::io::Result<()> {
+    let sysfs = Sysfs::default();
+    // The ACS-capable downstream ports of every switch between the GPU and
+    // the root; the IOMMU-isolating bits are the kernel's, this adds the one
+    // it leaves alone.
+    for port in pcie::switch_ports(&sysfs, gpu)? {
+        let config = Config::open(&sysfs, &port)?;
+        if let Some(acs) = config.acs()? {
+            if acs.supports(ACS_DIRECT_TRANSLATED) && !acs.enabled(ACS_DIRECT_TRANSLATED) {
+                config.set_acs_ctrl(&acs, acs.ctrl | ACS_DIRECT_TRANSLATED)?;
+            }
+        }
+        for endpoint in pcie::endpoints(&sysfs, &port)? {
+            // `None` until the NIC's firmware exposes ATS.
+            let _ats = Config::open(&sysfs, &endpoint)?.ats()?;
+        }
+    }
+    Ok(())
+}
+```
+
+A write, and any read past the first 64 bytes, needs root. Nothing here
+survives a reboot: the kernel enables the isolation bits itself at
+enumeration, and whatever a caller adds on top is its own to persist.
+
 ### NVLink discovery for init processes
 
 `pcilibs_rs::nvlink` is available without the `cc` feature. It reads PCI

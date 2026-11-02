@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 
 use tempfile::TempDir;
 
-use crate::Sysfs;
+use crate::{normalize_bdf, Sysfs};
 
 /// A sysfs tree, kept alive by the handle: dropping it removes the tree.
 pub struct Fake {
@@ -76,6 +76,42 @@ impl Fake {
         fs::write(path.join("device"), format!("{device:#06x}\n")).unwrap();
         fs::write(path.join("class"), format!("{class:#08x}\n")).unwrap();
         fs::write(path.join("numa_node"), "0\n").unwrap();
+    }
+
+    /// A function below a bridge, nested the way the kernel nests devices:
+    /// the real directory under the bridge's, and the `bus/pci/devices`
+    /// entry a link to it, so the path says who hangs off whom.
+    pub fn add_pci_device_under(
+        &self,
+        parent: &str,
+        address: &str,
+        vendor: u16,
+        device: u16,
+        class: u32,
+    ) {
+        let parent = fs::canonicalize(self.device(parent)).expect("an added parent");
+        let address = normalize_bdf(address).expect("a PCI address");
+        let real = parent.join(&address);
+        fs::create_dir_all(&real).unwrap();
+        std::os::unix::fs::symlink(&real, self.device(&address)).unwrap();
+        self.add_pci_device(&address, vendor, device, class, None);
+    }
+
+    /// A full 4 KiB configuration space whose extended capability list is
+    /// `caps`, each `(id, registers after the header)` chained in order from
+    /// 0x100 and padded to a dword.  The conventional 256 bytes stay zero.
+    pub fn set_ext_capabilities(&self, address: &str, caps: &[(u16, &[u8])]) {
+        let mut config = vec![0u8; 4096];
+        let mut offset = 0x100usize;
+        for (i, (id, body)) in caps.iter().enumerate() {
+            let len = (4 + body.len()).div_ceil(4) * 4;
+            let next = if i + 1 < caps.len() { offset + len } else { 0 };
+            let header = u32::from(*id) | (1 << 16) | ((next as u32) << 20);
+            config[offset..offset + 4].copy_from_slice(&header.to_le_bytes());
+            config[offset + 4..offset + 4 + body.len()].copy_from_slice(body);
+            offset += len;
+        }
+        fs::write(self.device(address).join("config"), config).unwrap();
     }
 
     /// Everything [`crate::PciDev`] reads to open a function: identity,
