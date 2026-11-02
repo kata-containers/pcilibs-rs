@@ -94,6 +94,15 @@ pub const TOKEN_METADATA_KEY: &str = "kata-fabric-view-token";
 /// Where the plugin listens for a publisher on the host itself; filesystem
 /// permissions are the credential there.
 pub const HOST_SOCKET: &str = "/var/run/kata-device-plugin/fabric-view.sock";
+/// The Service VM's guest CID when the runtime sets it deterministically
+/// (kata runtime-rs `vsock_cid`): the first slot of the range the runtime
+/// reserves for configured CIDs, so a publisher on the host dials a known
+/// address.  One Service VM per node and vsock is node-local, so every node
+/// uses the same number.
+pub const SERVICE_VM_CID: u32 = 3;
+/// Fabric Manager's vsock port, its `FM_CMD_VSOCK_PORT_NUMBER` default; the
+/// client side of `FM_CMD_VSOCK_CID=VMADDR_CID_ANY` in the Service VM.
+pub const FM_VSOCK_PORT: u32 = 1447971919;
 
 /// How the fabric owner wants the GPUs of active partitions consumed; the
 /// `unit` word of a [`v1::FabricView`].
