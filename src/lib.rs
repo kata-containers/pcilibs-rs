@@ -23,6 +23,8 @@ mod pci_ids;
 #[cfg(feature = "std")]
 mod pci_manager;
 #[cfg(feature = "std")]
+pub mod pcie;
+#[cfg(feature = "std")]
 mod sysfs;
 #[cfg(all(feature = "std", any(test, feature = "testfs")))]
 pub mod testfs;
