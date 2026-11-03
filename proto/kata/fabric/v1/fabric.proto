@@ -1,0 +1,80 @@
+// Copyright (c) NVIDIA CORPORATION
+// SPDX-License-Identifier: Apache-2.0
+
+// The NVLink fabric partition view a Service VM publishes to the host.
+//
+// In shared NVSwitch mode Fabric Manager (FM) in the Service VM owns the
+// NVSwitch fabric and activates GPU partitions; a tenant VM must receive
+// exactly one active partition's GPUs, because GPUs that share an active
+// partition can reach each other over NVLink.  FM names GPUs by physical
+// ID only, the module slot on the baseboard: it has no PCI view of the
+// host and, without GPUs of its own, no UUIDs either.  The host resolves
+// physical IDs to PCI functions (pcilibs_rs::fabric::resolve).
+//
+// Field names follow NVIDIA's fmpm sample client (partitionId, isActive,
+// physicalId) so the HGX guide's shell snippets keep working on the JSON
+// rendering of these messages.
+syntax = "proto3";
+
+package kata.fabric.v1;
+
+// fmGetSupportedFabricPartitions: every partition the topology defines,
+// active or not.
+message PartitionList {
+  // FM SDK struct version, for traceability only.
+  uint32 version = 1;
+  uint32 max_num_partitions = 2;
+  repeated Partition partition_info = 3;
+}
+
+message Partition {
+  uint32 partition_id = 1;
+  bool is_active = 2;
+  repeated PartitionGpu gpu_info = 3;
+}
+
+message PartitionGpu {
+  // The module slot on the baseboard, 1-based; the only identity FM has
+  // for a GPU it does not hold.
+  uint32 physical_id = 1;
+  // Empty when FM has no GPU driver view, which is always in a Service VM.
+  string uuid = 2;
+  string pci_bus_id = 3;
+  uint32 num_nvlinks_available = 4;
+  uint32 max_num_nvlinks = 5;
+  uint32 nvlink_line_rate_mbps = 6;
+}
+
+// fmGetUnsupportedFabricPartitions: partitions FM will not activate, their
+// NVLinks having failed.
+message UnsupportedPartitionList {
+  uint32 version = 1;
+  repeated UnsupportedPartition partition_info = 2;
+}
+
+message UnsupportedPartition {
+  uint32 partition_id = 1;
+  repeated uint32 gpu_physical_ids = 2;
+}
+
+// What the fabric owner publishes: FM's two lists and how the GPUs of
+// active partitions are to be consumed.
+message FabricView {
+  PartitionList partitions = 1;
+  UnsupportedPartitionList unsupported = 2;
+  // "partition" (or empty): one schedulable unit per active partition,
+  // taken whole.  "gpu": one unit per GPU, any count, bare-metal
+  // semantics for an owner who holds the whole node.
+  string unit = 3;
+}
+
+message PublishSummary {
+  uint32 views_received = 1;
+}
+
+// The host side, served by kata-device-plugin.  A client opens one stream
+// and sends a FabricView whenever FM's lists change; the open stream is
+// the liveness signal, its end withdraws the view.
+service FabricViewService {
+  rpc Publish(stream FabricView) returns (PublishSummary);
+}

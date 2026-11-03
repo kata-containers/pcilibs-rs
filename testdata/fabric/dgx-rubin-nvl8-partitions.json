@@ -1,0 +1,352 @@
+{
+  "version": 16909068,
+  "maxNumPartitions": 15,
+  "partitionInfo": [
+    {
+      "partitionId": 1,
+      "isActive": true,
+      "gpuInfo": [
+        {
+          "physicalId": 1,
+          "uuid": "",
+          "pciBusId": "",
+          "numNvLinksAvailable": 36,
+          "maxNumNvLinks": 36,
+          "nvlinkLineRateMBps": 41000
+        },
+        {
+          "physicalId": 2,
+          "uuid": "",
+          "pciBusId": "",
+          "numNvLinksAvailable": 36,
+          "maxNumNvLinks": 36,
+          "nvlinkLineRateMBps": 41000
+        },
+        {
+          "physicalId": 3,
+          "uuid": "",
+          "pciBusId": "",
+          "numNvLinksAvailable": 36,
+          "maxNumNvLinks": 36,
+          "nvlinkLineRateMBps": 41000
+        },
+        {
+          "physicalId": 4,
+          "uuid": "",
+          "pciBusId": "",
+          "numNvLinksAvailable": 36,
+          "maxNumNvLinks": 36,
+          "nvlinkLineRateMBps": 41000
+        },
+        {
+          "physicalId": 5,
+          "uuid": "",
+          "pciBusId": "",
+          "numNvLinksAvailable": 36,
+          "maxNumNvLinks": 36,
+          "nvlinkLineRateMBps": 41000
+        },
+        {
+          "physicalId": 6,
+          "uuid": "",
+          "pciBusId": "",
+          "numNvLinksAvailable": 36,
+          "maxNumNvLinks": 36,
+          "nvlinkLineRateMBps": 41000
+        },
+        {
+          "physicalId": 7,
+          "uuid": "",
+          "pciBusId": "",
+          "numNvLinksAvailable": 36,
+          "maxNumNvLinks": 36,
+          "nvlinkLineRateMBps": 41000
+        },
+        {
+          "physicalId": 8,
+          "uuid": "",
+          "pciBusId": "",
+          "numNvLinksAvailable": 36,
+          "maxNumNvLinks": 36,
+          "nvlinkLineRateMBps": 41000
+        }
+      ]
+    },
+    {
+      "partitionId": 2,
+      "isActive": false,
+      "gpuInfo": [
+        {
+          "physicalId": 1,
+          "uuid": "",
+          "pciBusId": "",
+          "numNvLinksAvailable": 36,
+          "maxNumNvLinks": 36,
+          "nvlinkLineRateMBps": 41000
+        },
+        {
+          "physicalId": 2,
+          "uuid": "",
+          "pciBusId": "",
+          "numNvLinksAvailable": 36,
+          "maxNumNvLinks": 36,
+          "nvlinkLineRateMBps": 41000
+        },
+        {
+          "physicalId": 3,
+          "uuid": "",
+          "pciBusId": "",
+          "numNvLinksAvailable": 36,
+          "maxNumNvLinks": 36,
+          "nvlinkLineRateMBps": 41000
+        },
+        {
+          "physicalId": 4,
+          "uuid": "",
+          "pciBusId": "",
+          "numNvLinksAvailable": 36,
+          "maxNumNvLinks": 36,
+          "nvlinkLineRateMBps": 41000
+        }
+      ]
+    },
+    {
+      "partitionId": 3,
+      "isActive": false,
+      "gpuInfo": [
+        {
+          "physicalId": 5,
+          "uuid": "",
+          "pciBusId": "",
+          "numNvLinksAvailable": 36,
+          "maxNumNvLinks": 36,
+          "nvlinkLineRateMBps": 41000
+        },
+        {
+          "physicalId": 6,
+          "uuid": "",
+          "pciBusId": "",
+          "numNvLinksAvailable": 36,
+          "maxNumNvLinks": 36,
+          "nvlinkLineRateMBps": 41000
+        },
+        {
+          "physicalId": 7,
+          "uuid": "",
+          "pciBusId": "",
+          "numNvLinksAvailable": 36,
+          "maxNumNvLinks": 36,
+          "nvlinkLineRateMBps": 41000
+        },
+        {
+          "physicalId": 8,
+          "uuid": "",
+          "pciBusId": "",
+          "numNvLinksAvailable": 36,
+          "maxNumNvLinks": 36,
+          "nvlinkLineRateMBps": 41000
+        }
+      ]
+    },
+    {
+      "partitionId": 4,
+      "isActive": false,
+      "gpuInfo": [
+        {
+          "physicalId": 1,
+          "uuid": "",
+          "pciBusId": "",
+          "numNvLinksAvailable": 36,
+          "maxNumNvLinks": 36,
+          "nvlinkLineRateMBps": 41000
+        },
+        {
+          "physicalId": 2,
+          "uuid": "",
+          "pciBusId": "",
+          "numNvLinksAvailable": 36,
+          "maxNumNvLinks": 36,
+          "nvlinkLineRateMBps": 41000
+        }
+      ]
+    },
+    {
+      "partitionId": 5,
+      "isActive": false,
+      "gpuInfo": [
+        {
+          "physicalId": 3,
+          "uuid": "",
+          "pciBusId": "",
+          "numNvLinksAvailable": 36,
+          "maxNumNvLinks": 36,
+          "nvlinkLineRateMBps": 41000
+        },
+        {
+          "physicalId": 4,
+          "uuid": "",
+          "pciBusId": "",
+          "numNvLinksAvailable": 36,
+          "maxNumNvLinks": 36,
+          "nvlinkLineRateMBps": 41000
+        }
+      ]
+    },
+    {
+      "partitionId": 6,
+      "isActive": false,
+      "gpuInfo": [
+        {
+          "physicalId": 5,
+          "uuid": "",
+          "pciBusId": "",
+          "numNvLinksAvailable": 36,
+          "maxNumNvLinks": 36,
+          "nvlinkLineRateMBps": 41000
+        },
+        {
+          "physicalId": 6,
+          "uuid": "",
+          "pciBusId": "",
+          "numNvLinksAvailable": 36,
+          "maxNumNvLinks": 36,
+          "nvlinkLineRateMBps": 41000
+        }
+      ]
+    },
+    {
+      "partitionId": 7,
+      "isActive": false,
+      "gpuInfo": [
+        {
+          "physicalId": 7,
+          "uuid": "",
+          "pciBusId": "",
+          "numNvLinksAvailable": 36,
+          "maxNumNvLinks": 36,
+          "nvlinkLineRateMBps": 41000
+        },
+        {
+          "physicalId": 8,
+          "uuid": "",
+          "pciBusId": "",
+          "numNvLinksAvailable": 36,
+          "maxNumNvLinks": 36,
+          "nvlinkLineRateMBps": 41000
+        }
+      ]
+    },
+    {
+      "partitionId": 8,
+      "isActive": false,
+      "gpuInfo": [
+        {
+          "physicalId": 1,
+          "uuid": "",
+          "pciBusId": "",
+          "numNvLinksAvailable": 36,
+          "maxNumNvLinks": 36,
+          "nvlinkLineRateMBps": 41000
+        }
+      ]
+    },
+    {
+      "partitionId": 9,
+      "isActive": false,
+      "gpuInfo": [
+        {
+          "physicalId": 2,
+          "uuid": "",
+          "pciBusId": "",
+          "numNvLinksAvailable": 36,
+          "maxNumNvLinks": 36,
+          "nvlinkLineRateMBps": 41000
+        }
+      ]
+    },
+    {
+      "partitionId": 10,
+      "isActive": false,
+      "gpuInfo": [
+        {
+          "physicalId": 3,
+          "uuid": "",
+          "pciBusId": "",
+          "numNvLinksAvailable": 36,
+          "maxNumNvLinks": 36,
+          "nvlinkLineRateMBps": 41000
+        }
+      ]
+    },
+    {
+      "partitionId": 11,
+      "isActive": false,
+      "gpuInfo": [
+        {
+          "physicalId": 4,
+          "uuid": "",
+          "pciBusId": "",
+          "numNvLinksAvailable": 36,
+          "maxNumNvLinks": 36,
+          "nvlinkLineRateMBps": 41000
+        }
+      ]
+    },
+    {
+      "partitionId": 12,
+      "isActive": false,
+      "gpuInfo": [
+        {
+          "physicalId": 5,
+          "uuid": "",
+          "pciBusId": "",
+          "numNvLinksAvailable": 36,
+          "maxNumNvLinks": 36,
+          "nvlinkLineRateMBps": 41000
+        }
+      ]
+    },
+    {
+      "partitionId": 13,
+      "isActive": false,
+      "gpuInfo": [
+        {
+          "physicalId": 6,
+          "uuid": "",
+          "pciBusId": "",
+          "numNvLinksAvailable": 36,
+          "maxNumNvLinks": 36,
+          "nvlinkLineRateMBps": 41000
+        }
+      ]
+    },
+    {
+      "partitionId": 14,
+      "isActive": false,
+      "gpuInfo": [
+        {
+          "physicalId": 7,
+          "uuid": "",
+          "pciBusId": "",
+          "numNvLinksAvailable": 36,
+          "maxNumNvLinks": 36,
+          "nvlinkLineRateMBps": 41000
+        }
+      ]
+    },
+    {
+      "partitionId": 15,
+      "isActive": false,
+      "gpuInfo": [
+        {
+          "physicalId": 8,
+          "uuid": "",
+          "pciBusId": "",
+          "numNvLinksAvailable": 36,
+          "maxNumNvLinks": 36,
+          "nvlinkLineRateMBps": 41000
+        }
+      ]
+    }
+  ]
+}

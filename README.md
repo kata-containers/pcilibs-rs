@@ -21,8 +21,8 @@ snapshots.
 without an allocator, runtime dependencies, build dependencies, or the PCI-name
 database.
 The default `std` feature preserves the Linux sysfs, VFIO and BAR APIs. Consumers
-that disable defaults must enable `std` explicitly to use those APIs. `cc` and
-`testfs` imply `std`.
+that disable defaults must enable `std` explicitly to use those APIs. `cc`,
+`fabric` and `testfs` imply `std`.
 
 ```toml
 # Pure classification only.
@@ -171,6 +171,30 @@ Everything goes through sysfs and a BAR0 mapping, so no NVIDIA kernel driver
 has to be present — which is what lets a mode be set on a GPU that is already
 bound to `vfio-pci`. Enabling the feature adds `anyhow`; a consumer that only
 enumerates devices pulls neither it nor this code.
+
+### `fabric` — the NVLink fabric partition view
+
+Off by default. Enables `pcilibs_rs::fabric`: the view Fabric Manager in a
+Service VM publishes in shared NVSwitch mode, and its resolution against the
+GPUs a host can pass through.
+
+```toml
+pcilibs-rs = { git = "...", features = ["fabric"] }
+```
+
+Fabric Manager names a GPU by physical ID, its module slot on the baseboard,
+and never by PCI address. The host reads the slot from the firmware's label
+on the PCI function (`/sys/bus/pci/devices/<bdf>/label`, "GPU0, SMX7" on DGX
+systems) and `fabric::resolve` maps each partition onto host functions,
+flagging partitions that are inactive, unsupported, or incomplete on this
+host. A GPU without a parsable label resolves to no partition, so an unknown
+board degrades to nothing advertised, never to a wrong partition.
+
+The wire types in `fabric::v1` are generated at build time from
+`proto/kata/fabric/v1/fabric.proto` with `protox`, so no `protoc` is needed,
+and carry serde derives with fmpm's field names: a client's JSON output and
+the message it streams are one schema. Enabling the feature adds `prost` and
+`serde`.
 
 ### NVLink discovery for init processes
 
