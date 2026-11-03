@@ -47,9 +47,13 @@ use crate::platform::GpuFunction;
 use crate::{context, Sysfs};
 
 pub mod v1 {
-    //! Generated from `proto/kata/fabric/v1/fabric.proto`.
+    //! Generated from `proto/kata/fabric/v1/fabric.proto`; with the
+    //! `fabric-grpc` feature also the Publish service's two ends.
     include!(concat!(env!("OUT_DIR"), "/kata.fabric.v1.rs"));
 }
+
+#[cfg(feature = "fabric-grpc")]
+pub mod grpc;
 
 /// The one-line log form both ends of the stream print, so a publisher's
 /// and a plugin's logs line up: the unit word, then each active partition
