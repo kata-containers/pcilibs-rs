@@ -141,9 +141,16 @@ impl Fake {
         path
     }
 
+    /// Makes both links the kernel makes, the function's `iommu_group` and
+    /// the group's `devices/<address>` entry.  A consumer that lists a group's
+    /// members reads the second, and wrote it by hand in its own tests while
+    /// the fixture made only the first.
     pub fn set_iommu_group(&self, address: &str, group: u32) {
         let path = self.add_iommu_group(group);
-        std::os::unix::fs::symlink(path, self.device(address).join("iommu_group")).unwrap();
+        std::os::unix::fs::symlink(&path, self.device(address).join("iommu_group")).unwrap();
+        let devices = path.join("devices");
+        fs::create_dir_all(&devices).unwrap();
+        std::os::unix::fs::symlink(self.device(address), devices.join(address)).unwrap();
     }
 
     pub fn add_infiniband(&self, name: &str, address: &str, node_type: &str, fw_ver: &str) {
@@ -152,6 +159,16 @@ impl Fake {
         std::os::unix::fs::symlink(self.device(address), path.join("device")).unwrap();
         fs::write(path.join("node_type"), format!("{node_type}\n")).unwrap();
         fs::write(path.join("fw_ver"), format!("{fw_ver}\n")).unwrap();
+    }
+
+    /// Adds a `umad<N>` or `issm<N>` entry of `ib_umad` that names its
+    /// InfiniBand device in `ibdev`.  That is the one attribute a caller
+    /// matching MAD cdevs to a device reads, so it is the one the fixture
+    /// writes.
+    pub fn add_infiniband_mad(&self, name: &str, ibdev: &str) {
+        let path = self.sysfs.infiniband_mad().join(name);
+        fs::create_dir_all(&path).unwrap();
+        fs::write(path.join("ibdev"), format!("{ibdev}\n")).unwrap();
     }
 
     /// `dev` is the cdev's `<major>:<minor>`, as sysfs prints it.
@@ -187,6 +204,10 @@ fn pci_function(sysfs: &Sysfs, address: &str, vendor: u16, device: u16, class: u
     fs::create_dir_all(&path).unwrap();
     fs::write(path.join("vendor"), format!("{vendor:#06x}\n")).unwrap();
     fs::write(path.join("subsystem_vendor"), format!("{vendor:#06x}\n")).unwrap();
+    // The catalog reads `subsystem_device` with the rest of the identity, and
+    // a function without it is an error, so every fixture carries one.  Zero
+    // claims no particular board.
+    fs::write(path.join("subsystem_device"), "0x0000\n").unwrap();
     fs::write(path.join("device"), format!("{device:#06x}\n")).unwrap();
     fs::write(path.join("class"), format!("{class:#08x}\n")).unwrap();
     fs::write(path.join("numa_node"), "0\n").unwrap();

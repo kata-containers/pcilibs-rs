@@ -12,6 +12,16 @@ pub struct GpuFunction {
     pub vendor: u32,
 }
 
+/// A network controller function is any function of PCI base class 0x02,
+/// whatever its vendor, Ethernet or InfiniBand, PF or VF.  The class is the
+/// only filter because which of them a guest wants is its own decision, just
+/// as `gpus` leaves the vendor to `gpus_by_vendor`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NetworkFunction {
+    pub bdf: String,
+    pub vendor: u32,
+}
+
 /// Lists are sorted by canonical BDF so boot-time selection is deterministic.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Topology {
@@ -23,6 +33,11 @@ pub struct Topology {
     pub switches: Vec<String>,
     /// Include sibling PFs because full-capability PFs may lack the VPD marker.
     pub management_functions: Vec<ManagementFunction>,
+    /// Every network controller, the management PFs among them, in BDF order.
+    /// That is the order a guest's CDI spec indexes them in.  The list is here
+    /// so an init that already has the topology does not scan PCI a second
+    /// time for them.
+    pub network_functions: Vec<NetworkFunction>,
 }
 
 impl Topology {
@@ -157,11 +172,20 @@ pub fn discover_topology(sysfs: &Sysfs) -> io::Result<Topology> {
             vendor: function.vendor,
         })
         .collect();
+    let network_functions = functions
+        .iter()
+        .filter(|function| function.class >> 16 == 0x02)
+        .map(|function| NetworkFunction {
+            bdf: function.bdf.clone(),
+            vendor: function.vendor,
+        })
+        .collect();
     let (switches, management_functions) = nvlink::discover_fabric(sysfs, &functions)?;
     Ok(Topology {
         gpus,
         switches,
         management_functions,
+        network_functions,
     })
 }
 
@@ -170,6 +194,28 @@ mod tests {
     use super::*;
     use crate::nvlink::NVIDIA;
     use crate::testfs;
+
+    #[test]
+    fn network_functions_are_every_vendors_class_02_function_in_bdf_order() {
+        let fake = testfs::fake();
+        fake.add_connectx("0000:05:00.0", true);
+        fake.add_pci_device("0000:03:00.0", 0x8086, 0x1572, 0x020000, None);
+        fake.add_pci_device("0000:04:00.0", 0x15b3, 0x1021, 0x060400, None);
+        let topology = discover_topology(&fake.sysfs).unwrap();
+        assert_eq!(
+            topology.network_functions,
+            vec![
+                NetworkFunction {
+                    bdf: "0000:03:00.0".to_owned(),
+                    vendor: 0x8086,
+                },
+                NetworkFunction {
+                    bdf: "0000:05:00.0".to_owned(),
+                    vendor: 0x15b3,
+                },
+            ]
+        );
+    }
 
     #[test]
     fn platform_preserves_the_service_vm_interface_without_gpus() {
@@ -198,6 +244,7 @@ mod tests {
                 bdf: "0000:05:00.0".to_owned(),
                 sw_mng: true,
             }],
+            network_functions: Vec::new(),
         };
         assert_eq!(
             topology.fabric().collect::<Vec<_>>(),
@@ -230,6 +277,7 @@ mod tests {
         let fake = testfs::fake();
         let bdf = "0000:40:00.0";
         fake.add_pci_device(bdf, 0x10de, 0x3002, 0x030200, None);
+        fs::remove_file(fake.device(bdf).join("subsystem_device")).unwrap();
         assert!(discover(&fake.sysfs).is_err());
         for value in ["not hex", "0x10000"] {
             fs::write(fake.device(bdf).join("subsystem_device"), value).unwrap();
