@@ -212,7 +212,7 @@ foreign GPU classifies the platform as unknown instead of vanishing. The
 vendor filters `discover_gpus(&sysfs, vendor)` and
 `topology.gpus_by_vendor(vendor)` keep every vendor for `None`; an NVIDIA init
 passes `Some(nvlink::NVIDIA)` for its driver and service decisions.
-`topology.fabric()` is the passthrough list of the HGX guide's section 3.2.2,
+`topology.fabric()` is the passthrough list of section 3.2.2 of NVIDIA's [shared NVSwitch virtualization guide](https://docs.nvidia.com/hgx-platforms/shared-nvswitch-gpu-passthrough-virtualization-integration-guide.pdf),
 the switch chips where they are PCI functions and the management ConnectX PFs
 where they are not, so the device plugin on the host and NVRC in the guest
 take the fabric's membership from one place. `slot(bdf)` is the address
