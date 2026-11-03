@@ -28,7 +28,7 @@ fn main() {
 }
 
 /// The fabric view wire types, from the proto with serde derives, so the
-/// JSON a client prints and the message it streams are one schema.  The
+/// JSON a client prints and the message it publishes are one schema.  The
 /// names are fmpm's, so the HGX guide's shell snippets keep working.
 #[cfg(feature = "fabric")]
 fn generate_fabric() {

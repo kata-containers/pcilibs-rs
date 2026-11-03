@@ -1,9 +1,9 @@
 // Copyright (c) NVIDIA CORPORATION
 // SPDX-License-Identifier: Apache-2.0
 
-//! The two ends of the fabric view's Publish stream, generated from the
+//! The two ends of the fabric view's Publish call, generated from the
 //! proto, and the token both agree on.  kata-device-plugin serves the
-//! stream and hands the token to the one container it gives the fabric to
+//! call and hands the token to the one container it gives the fabric to
 //! (see [`super::ENDPOINT_ENV`] and [`super::TOKEN_ENV`]); a Fabric Manager
 //! client in that container publishes with it.  A publisher on the host
 //! itself reaches the plugin over [`super::HOST_SOCKET`], where filesystem
@@ -123,8 +123,8 @@ mod tests {
     impl FabricViewService for Unused {
         async fn publish(
             &self,
-            _: Request<tonic::Streaming<super::super::v1::FabricView>>,
-        ) -> Result<tonic::Response<super::super::v1::PublishSummary>, Status> {
+            _: Request<super::super::v1::FabricView>,
+        ) -> Result<tonic::Response<super::super::v1::PublishResponse>, Status> {
             unreachable!()
         }
     }

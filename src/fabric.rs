@@ -17,7 +17,7 @@
 //!
 //! The wire types in [`v1`] are generated from
 //! `proto/kata/fabric/v1/fabric.proto` with serde derives, so the JSON a
-//! client prints and the message it streams are one schema.  Field names
+//! client prints and the message it publishes are one schema.  Field names
 //! follow NVIDIA's `fmpm` sample client (`partitionId`, `isActive`,
 //! `physicalId`), so the guide's shell snippets keep working.
 //!
@@ -55,7 +55,7 @@ pub mod v1 {
 #[cfg(feature = "fabric-grpc")]
 pub mod grpc;
 
-/// The one-line log form both ends of the stream print, so a publisher's
+/// The one-line log form both ends of the call print, so a publisher's
 /// and a plugin's logs line up: the unit word, then each active partition
 /// as `id x gpus`.
 impl fmt::Display for v1::FabricView {
@@ -89,7 +89,7 @@ impl fmt::Display for v1::FabricView {
 pub const ENDPOINT_ENV: &str = "KATA_FABRIC_VIEW_ENDPOINT";
 /// Environment variable carrying the token; see [`ENDPOINT_ENV`].
 pub const TOKEN_ENV: &str = "KATA_FABRIC_VIEW_TOKEN";
-/// gRPC metadata key the token travels under on every stream.
+/// gRPC metadata key the token travels under on every call.
 pub const TOKEN_METADATA_KEY: &str = "kata-fabric-view-token";
 /// Where the plugin listens for a publisher on the host itself; filesystem
 /// permissions are the credential there.

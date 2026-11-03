@@ -68,13 +68,12 @@ message FabricView {
   string unit = 3;
 }
 
-message PublishSummary {
-  uint32 views_received = 1;
-}
+message PublishResponse {}
 
-// The host side, served by kata-device-plugin.  A client opens one stream
-// and sends a FabricView whenever FM's lists change; the open stream is
-// the liveness signal, its end withdraws the view.
+// The host side, served by kata-device-plugin.  One call replaces the view
+// the plugin holds; the plugin keeps it until the next call or until it
+// hands the fabric to a new holder.  The client that changes partitions
+// publishes the result and exits.
 service FabricViewService {
-  rpc Publish(stream FabricView) returns (PublishSummary);
+  rpc Publish(FabricView) returns (PublishResponse);
 }

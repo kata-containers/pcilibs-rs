@@ -32,7 +32,7 @@ cc = ["std", "dep:anyhow", "anyhow/std"]
 # it pulls prost and serde, and generates code at build time (with protox, so
 # no protoc is needed).
 fabric = ["std", "dep:prost", "dep:serde", "dep:prost-build", "dep:protox"]
-# The two ends of the fabric view's Publish stream, generated from the same
+# The two ends of the fabric view's Publish call, generated from the same
 # proto: the server kata-device-plugin hosts, the client a Fabric Manager
 # client publishes with, and the token check both agree on.  Adds tonic.
 fabric-grpc = ["fabric", "dep:tonic", "dep:tonic-prost", "dep:tonic-prost-build"]

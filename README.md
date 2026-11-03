@@ -193,10 +193,10 @@ board degrades to nothing advertised, never to a wrong partition.
 The wire types in `fabric::v1` are generated at build time from
 `proto/kata/fabric/v1/fabric.proto` with `protox`, so no `protoc` is needed,
 and carry serde derives with fmpm's field names: a client's JSON output and
-the message it streams are one schema. Enabling the feature adds `prost` and
+the message it publishes are one schema. Enabling the feature adds `prost` and
 `serde`.
 
-`fabric-grpc` adds the two ends of the view's `Publish` stream from the same
+`fabric-grpc` adds the two ends of the view's `Publish` call from the same
 proto, in `fabric::grpc`: the server `kata-device-plugin` hosts, the client a
 Fabric Manager client publishes with, and the token check both agree on. It
 adds `tonic`.
