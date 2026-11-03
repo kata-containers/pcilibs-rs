@@ -141,9 +141,14 @@ impl Fake {
         path
     }
 
+    /// Links the function to its group both ways, as the kernel does: the
+    /// function's `iommu_group` and the group's `devices/<address>` listing.
     pub fn set_iommu_group(&self, address: &str, group: u32) {
         let path = self.add_iommu_group(group);
-        std::os::unix::fs::symlink(path, self.device(address).join("iommu_group")).unwrap();
+        std::os::unix::fs::symlink(&path, self.device(address).join("iommu_group")).unwrap();
+        let devices = path.join("devices");
+        fs::create_dir_all(&devices).unwrap();
+        std::os::unix::fs::symlink(self.device(address), devices.join(address)).unwrap();
     }
 
     pub fn add_infiniband(&self, name: &str, address: &str, node_type: &str, fw_ver: &str) {
@@ -152,6 +157,13 @@ impl Fake {
         std::os::unix::fs::symlink(self.device(address), path.join("device")).unwrap();
         fs::write(path.join("node_type"), format!("{node_type}\n")).unwrap();
         fs::write(path.join("fw_ver"), format!("{fw_ver}\n")).unwrap();
+    }
+
+    /// A MAD device `ib_umad` registered for `ibdev`: `umad<N>` or `issm<N>`.
+    pub fn add_infiniband_mad(&self, name: &str, ibdev: &str) {
+        let path = self.sysfs.infiniband_mad().join(name);
+        fs::create_dir_all(&path).unwrap();
+        fs::write(path.join("ibdev"), format!("{ibdev}\n")).unwrap();
     }
 
     /// `dev` is the cdev's `<major>:<minor>`, as sysfs prints it.
@@ -187,6 +199,9 @@ fn pci_function(sysfs: &Sysfs, address: &str, vendor: u16, device: u16, class: u
     fs::create_dir_all(&path).unwrap();
     fs::write(path.join("vendor"), format!("{vendor:#06x}\n")).unwrap();
     fs::write(path.join("subsystem_vendor"), format!("{vendor:#06x}\n")).unwrap();
+    // The catalog reads the whole identity; a fixture without a subsystem id
+    // reads as the plain device.
+    fs::write(path.join("subsystem_device"), "0x0000\n").unwrap();
     fs::write(path.join("device"), format!("{device:#06x}\n")).unwrap();
     fs::write(path.join("class"), format!("{class:#08x}\n")).unwrap();
     fs::write(path.join("numa_node"), "0\n").unwrap();
