@@ -231,7 +231,9 @@ pub fn add_at(root: &Path, n: u32, address: &str, vendor: u16, device: u16, clas
 
 /// A ConnectX-7 InfiniBand function as cdev `vfio<n>`, with the VPD of the
 /// management ConnectX when `sw_mng`, of a data-path NIC otherwise.
-pub fn add_connectx(root: &Path, n: u32, address: &str, sw_mng: bool) {
+/// [`Fake::add_connectx`] adds the PCI function alone; this adds the vfio
+/// cdev on top, the device plugin's view of it.
+pub fn add_connectx_cdev(root: &Path, n: u32, address: &str, sw_mng: bool) {
     let (vendor, device, class) = CONNECTX7_IB;
     let function = add_at(root, n, address, vendor, device, class);
     write_va(&function, sw_mng);
@@ -319,8 +321,8 @@ mod tests {
     #[test]
     fn a_connectx_cdev_is_the_function_the_scan_names() {
         let root = tempfile::tempdir().unwrap();
-        add_connectx(root.path(), 1, "0000:05:00.0", true);
-        add_connectx(root.path(), 2, "0000:05:00.1", false);
+        add_connectx_cdev(root.path(), 1, "0000:05:00.0", true);
+        add_connectx_cdev(root.path(), 2, "0000:05:00.1", false);
 
         let sysfs = Sysfs::new(root.path());
         let cdevs = crate::enumerate_iommufd(root.path(), &sysfs);
