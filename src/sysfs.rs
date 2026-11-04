@@ -97,6 +97,17 @@ impl Sysfs {
     pub fn infiniband_verbs(&self) -> PathBuf {
         self.class("infiniband_verbs")
     }
+
+    /// The MAD devices `ib_umad` registers, `umad<N>` and `issm<N>`, each
+    /// naming its InfiniBand device in `ibdev`.
+    pub fn infiniband_mad(&self) -> PathBuf {
+        self.class("infiniband_mad")
+    }
+
+    /// Misc character devices; `rdma_cm` is the one RDMA user space opens.
+    pub fn misc(&self) -> PathBuf {
+        self.class("misc")
+    }
 }
 
 #[cfg(test)]
