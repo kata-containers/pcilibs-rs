@@ -145,10 +145,14 @@ impl Fake {
     /// function's `iommu_group` and the group's `devices/<address>` listing.
     pub fn set_iommu_group(&self, address: &str, group: u32) {
         let path = self.add_iommu_group(group);
-        std::os::unix::fs::symlink(&path, self.device(address).join("iommu_group")).unwrap();
+        let function = self.device(address);
+        std::os::unix::fs::symlink(&path, function.join("iommu_group")).unwrap();
         let devices = path.join("devices");
         fs::create_dir_all(&devices).unwrap();
-        std::os::unix::fs::symlink(self.device(address), devices.join(address)).unwrap();
+        // The listing names the function as the kernel spells it, so a lookup
+        // by canonical address finds it whatever the caller wrote.
+        let name = function.file_name().unwrap().to_owned();
+        std::os::unix::fs::symlink(&function, devices.join(name)).unwrap();
     }
 
     pub fn add_infiniband(&self, name: &str, address: &str, node_type: &str, fw_ver: &str) {
@@ -358,5 +362,18 @@ mod tests {
                 .collect::<Vec<_>>(),
             [true, false]
         );
+    }
+
+    #[test]
+    fn an_iommu_group_lists_its_member_by_canonical_address() {
+        let f = fake();
+        f.add_pci_device("65:00.0", 0x10de, 0x2330, 0x030200, None);
+        f.set_iommu_group("65:00.0", 7);
+        assert!(f
+            .sysfs
+            .iommu_groups()
+            .join("7/devices/0000:65:00.0")
+            .is_symlink());
+        assert!(f.device("0000:65:00.0").join("iommu_group").is_symlink());
     }
 }
