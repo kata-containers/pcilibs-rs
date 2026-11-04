@@ -281,10 +281,13 @@ pub fn children(sysfs: &Sysfs, address: &str) -> io::Result<Vec<String>> {
     let entries =
         fs::read_dir(&real).map_err(|err| context(err, format!("list {}", real.display())))?;
 
-    let mut children: Vec<String> = entries
-        .flatten()
-        .filter_map(|entry| normalize_bdf(&entry.file_name().to_string_lossy()))
-        .collect();
+    let mut children = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|err| context(err, format!("list {}", real.display())))?;
+        if let Some(bdf) = normalize_bdf(&entry.file_name().to_string_lossy()) {
+            children.push(bdf);
+        }
+    }
     children.sort();
 
     Ok(children)
@@ -313,7 +316,11 @@ pub fn switch_ports(sysfs: &Sysfs, address: &str) -> io::Result<Vec<String>> {
 
     let mut ports = BTreeSet::new();
     while let Some(up) = parent(sysfs, &current)? {
-        // The bridges below a bridge are a switch's downstream ports.
+        // The bridges below a bridge are switch ports.  ACS keeps the
+        // downstream ones.  The PCIe specification defines the capability for
+        // Root Ports, Switch Downstream Ports and multi-function devices, so
+        // a nested switch's upstream port reads none and drops out, as
+        // 18:00.0 does on the DGX between 16:01.0 and 19:00.0.
         for sibling in children(sysfs, &up)? {
             if is_bridge(sysfs, &sibling) && Config::open(sysfs, &sibling)?.acs()?.is_some() {
                 ports.insert(sibling);
