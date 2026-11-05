@@ -13,6 +13,8 @@ pub mod platform;
 #[cfg(feature = "cc")]
 pub mod cc;
 #[cfg(feature = "std")]
+pub mod fabric;
+#[cfg(feature = "std")]
 mod iommufd;
 #[cfg(feature = "std")]
 pub mod nvlink;
