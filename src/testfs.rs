@@ -97,6 +97,15 @@ impl Fake {
         fs::write(path.join("power/runtime_status"), "active\n").unwrap();
     }
 
+    /// A ConnectX-7 InfiniBand function with the VPD of the management
+    /// ConnectX when `sw_mng`, of a data-path NIC otherwise.  Every real
+    /// ConnectX has a VPD; a function without the attribute is its own case.
+    pub fn add_connectx(&self, address: &str, sw_mng: bool) {
+        let (vendor, device, class) = CONNECTX7_IB;
+        self.add_pci_device(address, vendor, device, class, None);
+        write_va(&self.device(address), sw_mng);
+    }
+
     pub fn set_register(&self, address: &str, offset: u64, value: u32) {
         fs::OpenOptions::new()
             .write(true)
@@ -184,6 +193,9 @@ fn pci_function(sysfs: &Sysfs, address: &str, vendor: u16, device: u16, class: u
     path
 }
 
+/// A ConnectX-7 as an InfiniBand controller: vendor, device, 24-bit class.
+const CONNECTX7_IB: (u16, u16, u32) = (0x15b3, 0x1021, 0x020700);
+
 /// Add one fake cdev `vfio<n>` with the given PCI `vendor`, `device` and
 /// 24-bit `class`.  The function sits alone on bus `n & 0xff` of domain
 /// `n >> 8`, so every cdev number below 2^24 gets an address of its own;
@@ -215,6 +227,40 @@ pub fn add_at(root: &Path, n: u32, address: &str, vendor: u16, device: u16, clas
     let target = Path::new("../../../bus/pci/devices").join(function.file_name().unwrap());
     std::os::unix::fs::symlink(target, vfio_dev.join("device")).unwrap();
     function
+}
+
+/// A ConnectX-7 InfiniBand function as cdev `vfio<n>`, with the VPD of the
+/// management ConnectX when `sw_mng`, of a data-path NIC otherwise.
+/// [`Fake::add_connectx`] adds the PCI function alone; this adds the vfio
+/// cdev on top, which is what [`crate::enumerate_iommufd`] sees.
+pub fn add_connectx_cdev(root: &Path, n: u32, address: &str, sw_mng: bool) {
+    let (vendor, device, class) = CONNECTX7_IB;
+    let function = add_at(root, n, address, vendor, device, class);
+    write_va(&function, sw_mng);
+}
+
+/// The `VA` field NVIDIA's HGX Shared NVSwitch guide (19.0, section 2.5.2.2)
+/// shows on the management ConnectX, as `lspci -vv` prints it.
+pub const SW_MNG: &[u8] = b"MLX:MN=MLNX:CSKU=V2:UUID=V3:PCI=V0:SMDL=SW_MNG:MODL=C7010Z";
+
+/// The same field on a data-path ConnectX: the vendor fields, no `SMDL` role.
+const DATA_PATH: &[u8] = b"MLX:MN=MLNX:CSKU=V2:UUID=V3:PCI=V0";
+
+/// A VPD of one read-only resource holding one keyword, then the end tag.
+pub fn vpd(keyword: &[u8; 2], value: &[u8]) -> Vec<u8> {
+    let length = (value.len() + 3) as u16;
+    let mut data = vec![0x90];
+    data.extend(length.to_le_bytes());
+    data.extend(keyword);
+    data.push(value.len() as u8);
+    data.extend(value);
+    data.push(0x78);
+    data
+}
+
+fn write_va(function: &Path, sw_mng: bool) {
+    let va = if sw_mng { SW_MNG } else { DATA_PATH };
+    fs::write(function.join("vpd"), vpd(b"VA", va)).unwrap();
 }
 
 #[cfg(test)]
@@ -266,6 +312,36 @@ mod tests {
         assert_eq!(
             devs.iter().map(|dev| dev.bdf.as_str()).collect::<Vec<_>>(),
             ["0000:ff:00.0", "0001:00:00.0", "0100:ff:00.0"]
+        );
+    }
+
+    /// Both fixture families describe the management ConnectX the same
+    /// way, so the cdevs one enumerates are the functions a topology scan
+    /// names.
+    #[test]
+    fn a_connectx_cdev_is_the_function_the_scan_names() {
+        let root = tempfile::tempdir().unwrap();
+        add_connectx_cdev(root.path(), 1, "0000:05:00.0", true);
+        add_connectx_cdev(root.path(), 2, "0000:05:00.1", false);
+
+        let sysfs = Sysfs::new(root.path());
+        let cdevs = crate::enumerate_iommufd(root.path(), &sysfs);
+        let topology = crate::nvlink::discover(&sysfs).unwrap();
+        assert_eq!(
+            cdevs.iter().map(|dev| dev.bdf.as_str()).collect::<Vec<_>>(),
+            topology
+                .management_functions
+                .iter()
+                .map(|function| function.bdf.as_str())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            topology
+                .management_functions
+                .iter()
+                .map(|function| function.sw_mng)
+                .collect::<Vec<_>>(),
+            [true, false]
         );
     }
 }
