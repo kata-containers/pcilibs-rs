@@ -69,13 +69,7 @@ impl Fake {
         driver: Option<&str>,
     ) {
         self.add_device(address, driver);
-
-        let path = self.device(address);
-        fs::write(path.join("vendor"), format!("{vendor:#06x}\n")).unwrap();
-        fs::write(path.join("subsystem_vendor"), format!("{vendor:#06x}\n")).unwrap();
-        fs::write(path.join("device"), format!("{device:#06x}\n")).unwrap();
-        fs::write(path.join("class"), format!("{class:#08x}\n")).unwrap();
-        fs::write(path.join("numa_node"), "0\n").unwrap();
+        pci_function(&self.sysfs, address, vendor, device, class);
     }
 
     /// Everything [`crate::PciDev`] reads to open a function: identity,
@@ -176,24 +170,51 @@ fn read(path: PathBuf) -> String {
     fs::read_to_string(path).unwrap_or_default()
 }
 
-/// Add one fake cdev `vfio<n>` with the given sysfs `vendor`, `device`, and
-/// `class` contents (as sysfs prints them, e.g. "0x10de", "0x2330",
-/// "0x030200").
+/// The attributes a PCI function carries, written the way sysfs prints them,
+/// under `bus/pci/devices/<address>`.  Both fixture families write a function
+/// through here, so there is one description of one.
+fn pci_function(sysfs: &Sysfs, address: &str, vendor: u16, device: u16, class: u32) -> PathBuf {
+    let path = sysfs.device(address).expect("a PCI address");
+    fs::create_dir_all(&path).unwrap();
+    fs::write(path.join("vendor"), format!("{vendor:#06x}\n")).unwrap();
+    fs::write(path.join("subsystem_vendor"), format!("{vendor:#06x}\n")).unwrap();
+    fs::write(path.join("device"), format!("{device:#06x}\n")).unwrap();
+    fs::write(path.join("class"), format!("{class:#08x}\n")).unwrap();
+    fs::write(path.join("numa_node"), "0\n").unwrap();
+    path
+}
+
+/// Add one fake cdev `vfio<n>` with the given PCI `vendor`, `device` and
+/// 24-bit `class`.  The function sits alone on bus `n & 0xff` of domain
+/// `n >> 8`, so every cdev number below 2^24 gets an address of its own;
+/// [`add_at`] places it.
 ///
 /// `root` is both the `/dev/vfio` and the sysfs root: the cdev lands at
-/// `<root>/devices/vfio<n>` and its identity under `<root>/class/vfio-dev/`,
+/// `<root>/devices/vfio<n>` and its function under `<root>/bus/pci/devices`,
 /// so a caller passes `root` and `Sysfs::new(root)` to the same tree.
-pub fn add(root: &Path, n: u32, vendor: &str, device: &str, class: &str) {
+pub fn add(root: &Path, n: u32, vendor: u16, device: u16, class: u32) {
+    let address = format!("{:04x}:{:02x}:00.0", n >> 8, n & 0xff);
+    add_at(root, n, &address, vendor, device, class);
+}
+
+/// [`add`] at a chosen address, so a test can put several functions on one
+/// slot.  Laid out the way the kernel does it: the function under
+/// `bus/pci/devices/<address>` carries the identity, and
+/// `class/vfio-dev/vfio<n>/device` links to it.  Returns the function's
+/// directory, for the attributes a test is about.
+pub fn add_at(root: &Path, n: u32, address: &str, vendor: u16, device: u16, class: u32) -> PathBuf {
     let devices = root.join("devices");
     fs::create_dir_all(&devices).unwrap();
     fs::write(devices.join(format!("vfio{n}")), b"").unwrap();
-    let dev_dir = Sysfs::new(root)
-        .vfio_dev(&format!("vfio{n}"))
-        .join("device");
-    fs::create_dir_all(&dev_dir).unwrap();
-    fs::write(dev_dir.join("vendor"), format!("{vendor}\n")).unwrap();
-    fs::write(dev_dir.join("device"), format!("{device}\n")).unwrap();
-    fs::write(dev_dir.join("class"), format!("{class}\n")).unwrap();
+    let sysfs = Sysfs::new(root);
+    let function = pci_function(&sysfs, address, vendor, device, class);
+    let vfio_dev = sysfs.vfio_dev(&format!("vfio{n}"));
+    fs::create_dir_all(&vfio_dev).unwrap();
+    // Relative to the link, as the kernel spells it, so the tree reads the
+    // same from any working directory when `root` is a relative path.
+    let target = Path::new("../../../bus/pci/devices").join(function.file_name().unwrap());
+    std::os::unix::fs::symlink(target, vfio_dev.join("device")).unwrap();
+    function
 }
 
 #[cfg(test)]
@@ -209,5 +230,42 @@ mod tests {
         let driver = fake.driver("vfio-pci");
         assert!(driver.join("0000:65:00.0").is_symlink());
         assert!(!driver.join("65:00.0").exists());
+    }
+
+    /// The identity lives on the function; the vfio-dev entry only links to
+    /// it, as the kernel lays it out: a relative link, so the tree does not
+    /// depend on where `root` was spelled from.
+    #[test]
+    fn a_cdev_links_to_the_function_that_carries_its_identity() {
+        let root = tempfile::tempdir().unwrap();
+        add(root.path(), 42, 0x10de, 0x2330, 0x030200);
+
+        let sysfs = Sysfs::new(root.path());
+        let device = sysfs.vfio_dev("vfio42").join("device");
+        assert_eq!(
+            fs::read_link(&device).unwrap(),
+            Path::new("../../../bus/pci/devices/0000:2a:00.0")
+        );
+        assert_eq!(
+            fs::canonicalize(&device).unwrap(),
+            fs::canonicalize(sysfs.device("0000:2a:00.0").unwrap()).unwrap()
+        );
+        assert_eq!(read(device.join("vendor")), "0x10de\n");
+    }
+
+    /// Cdev numbers are independent of PCI bus numbers, so the fixture must
+    /// not run out of addresses at 256.
+    #[test]
+    fn every_cdev_number_gets_an_address_of_its_own() {
+        let root = tempfile::tempdir().unwrap();
+        for n in [255, 256, 0x1_00ff] {
+            add(root.path(), n, 0x10de, 0x2330, 0x030200);
+        }
+
+        let devs = crate::enumerate_iommufd(root.path(), &Sysfs::new(root.path()));
+        assert_eq!(
+            devs.iter().map(|dev| dev.bdf.as_str()).collect::<Vec<_>>(),
+            ["0000:ff:00.0", "0001:00:00.0", "0100:ff:00.0"]
+        );
     }
 }
