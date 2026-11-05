@@ -41,6 +41,21 @@ impl Topology {
             !self.management_functions.is_empty(),
         )
     }
+
+    /// The node's NVSwitch fabric as PCI functions, switches then management
+    /// functions: what Shared NVSwitch mode passes through or manages as one
+    /// unit (NVIDIA HGX integration guide, release 19.0, §3.2.2).  On HGX
+    /// H100/H200 the switch chips are bridge functions; on HGX B200/B300 the
+    /// NVSwitches "are represented as full and limited capability PFs under
+    /// the management Mellanox ConnectX" (§3.2.2.2), so those PFs are the
+    /// fabric.  One definition for the host side that passes it through and
+    /// the guest side that receives it.
+    pub fn fabric(&self) -> impl Iterator<Item = &str> {
+        self.switches
+            .iter()
+            .map(String::as_str)
+            .chain(self.management_functions.iter().map(|f| f.bdf.as_str()))
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -168,6 +183,27 @@ mod tests {
         );
         assert_eq!(detected.platform.gpu_count, 0);
         assert_eq!(detected.topology.management_functions.len(), 1);
+        assert_eq!(
+            detected.topology.fabric().collect::<Vec<_>>(),
+            ["0000:05:00.0"]
+        );
+    }
+
+    #[test]
+    fn fabric_is_the_switch_chips_then_the_management_pfs() {
+        let topology = Topology {
+            gpus: Vec::new(),
+            switches: vec!["0000:03:00.0".to_owned(), "0000:04:00.0".to_owned()],
+            management_functions: vec![ManagementFunction {
+                bdf: "0000:05:00.0".to_owned(),
+                sw_mng: true,
+            }],
+        };
+        assert_eq!(
+            topology.fabric().collect::<Vec<_>>(),
+            ["0000:03:00.0", "0000:04:00.0", "0000:05:00.0"]
+        );
+        assert_eq!(Topology::default().fabric().count(), 0);
     }
 
     #[test]
