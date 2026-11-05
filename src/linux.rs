@@ -51,6 +51,13 @@ pub fn normalize_bdf(bdf: &str) -> Option<String> {
     Some(format!("{domain:04x}:{bus:02x}:{device:02x}.{function:x}"))
 }
 
+/// `0000:65:00.1` → `0000:65:00`: the PCI device a function belongs to, which
+/// its sibling functions share.  Takes an address as [`normalize_bdf`] spells
+/// one; an address without a function separator is returned whole.
+pub fn slot(bdf: &str) -> &str {
+    bdf.rsplit_once('.').map_or(bdf, |(slot, _)| slot)
+}
+
 /// Device driver for vfio-pci guest kernel driver.
 pub const DRIVER_VFIO_PCI_GK_TYPE: &str = "vfio-pci-gk";
 /// Device driver for vfio-pci.
@@ -169,6 +176,14 @@ mod tests {
     #[case::unpadded("9:1:0.0", "0009:01:00.0")]
     fn normalize_bdf_canonicalises_an_address(#[case] input: &str, #[case] expected: &str) {
         assert_eq!(normalize_bdf(input).unwrap(), expected);
+    }
+
+    #[rstest::rstest]
+    #[case::function_zero("0000:65:00.0", "0000:65:00")]
+    #[case::sibling("0000:65:00.3", "0000:65:00")]
+    #[case::no_function("0000:65:00", "0000:65:00")]
+    fn slot_is_the_address_without_the_function(#[case] bdf: &str, #[case] expected: &str) {
+        assert_eq!(slot(bdf), expected);
     }
 
     #[rstest::rstest]
