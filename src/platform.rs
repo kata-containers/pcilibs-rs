@@ -17,6 +17,21 @@ pub use linux::{
 use crate::catalog::Catalog;
 use crate::gpu::{Attachment, Family};
 
+/// PCI vendor ID of NVIDIA.
+pub const NVIDIA: u32 = 0x10de;
+
+/// Returns true if the 24-bit PCI `class` code (e.g. `0x030200`) is a VGA or
+/// 3D controller.
+pub const fn is_gpu_class(class: u32) -> bool {
+    matches!(class >> 8, 0x0300 | 0x0302)
+}
+
+/// Returns true for an NVIDIA VGA or 3D controller. NVSwitches, NICs and
+/// other NVIDIA functions are not GPUs.
+pub const fn is_nvidia_gpu(vendor: u32, class: u32) -> bool {
+    vendor == NVIDIA && is_gpu_class(class)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     Unknown,
@@ -118,6 +133,27 @@ mod tests {
 
     fn gpu(device: u16, subsystem_device: u16) -> GpuIdentity {
         GpuIdentity::new(0x10de, device, 0x10de, subsystem_device)
+    }
+
+    #[test]
+    fn nvidia_gpu_classification() {
+        for (vendor, class, expected) in [
+            (NVIDIA, 0x030200, true),  // 3D controller
+            (NVIDIA, 0x030000, true),  // VGA controller
+            (NVIDIA, 0x038000, false), // other display controller
+            (NVIDIA, 0x068000, false), // NVSwitch
+            (NVIDIA, 0x040300, false), // audio function
+            (0x15b3, 0x020000, false), // Mellanox NIC
+            (0x1002, 0x030000, false), // another vendor's GPU
+        ] {
+            assert_eq!(
+                is_nvidia_gpu(vendor, class),
+                expected,
+                "{vendor:#x} {class:#08x}"
+            );
+        }
+        assert!(is_gpu_class(0x030000));
+        assert!(!is_gpu_class(0x068000));
     }
 
     #[test]
