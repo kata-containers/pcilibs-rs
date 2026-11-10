@@ -97,6 +97,22 @@ impl Sysfs {
     pub fn infiniband_verbs(&self) -> PathBuf {
         self.class("infiniband_verbs")
     }
+
+    /// `ib_umad` registers `umad<N>` and `issm<N>` under `class/infiniband_mad`,
+    /// and each names its InfiniBand device in `ibdev`.  The class has its own
+    /// accessor so a caller that opens the MAD cdevs does not derive the path
+    /// from a sibling class and carry the layout of sysfs itself.
+    pub fn infiniband_mad(&self) -> PathBuf {
+        self.class("infiniband_mad")
+    }
+
+    /// RDMA user space opens `rdma_cm`, which sits under `class/misc`.  The
+    /// class has its own accessor for the same reason as
+    /// [`Self::infiniband_mad`], so that the path is spelled once, by the
+    /// library.
+    pub fn misc(&self) -> PathBuf {
+        self.class("misc")
+    }
 }
 
 #[cfg(test)]
