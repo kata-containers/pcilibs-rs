@@ -17,6 +17,22 @@ pub use linux::{
 use crate::catalog::Catalog;
 use crate::gpu::{Attachment, Family};
 
+pub mod vendor {
+    pub const NVIDIA: u32 = 0x10de;
+    pub const MELLANOX: u32 = 0x15b3;
+}
+
+pub const CLASS_VGA_CONTROLLER: u32 = 0x0300;
+pub const CLASS_3D_CONTROLLER: u32 = 0x0302;
+
+pub const fn is_gpu_class(class: u32) -> bool {
+    matches!(class >> 8, CLASS_VGA_CONTROLLER | CLASS_3D_CONTROLLER)
+}
+
+pub const fn is_nvidia_gpu(vendor: u32, class: u32) -> bool {
+    vendor == self::vendor::NVIDIA && is_gpu_class(class)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     Unknown,
@@ -117,7 +133,37 @@ mod tests {
     use super::*;
 
     fn gpu(device: u16, subsystem_device: u16) -> GpuIdentity {
-        GpuIdentity::new(0x10de, device, 0x10de, subsystem_device)
+        let nvidia = vendor::NVIDIA as u16;
+        GpuIdentity::new(nvidia, device, nvidia, subsystem_device)
+    }
+
+    #[test]
+    fn nvidia_gpu_classification() {
+        const GPU_3D: u32 = CLASS_3D_CONTROLLER << 8;
+        const GPU_VGA: u32 = CLASS_VGA_CONTROLLER << 8;
+        const OTHER_DISPLAY: u32 = 0x038000;
+        const NVSWITCH: u32 = 0x068000;
+        const GPU_AUDIO: u32 = 0x040300;
+        const ETHERNET: u32 = 0x020000;
+        const AMD: u32 = 0x1002;
+
+        for (vendor, class, expected) in [
+            (vendor::NVIDIA, GPU_3D, true),
+            (vendor::NVIDIA, GPU_VGA, true),
+            (vendor::NVIDIA, OTHER_DISPLAY, false),
+            (vendor::NVIDIA, NVSWITCH, false),
+            (vendor::NVIDIA, GPU_AUDIO, false),
+            (vendor::MELLANOX, ETHERNET, false),
+            (AMD, GPU_VGA, false),
+        ] {
+            assert_eq!(
+                is_nvidia_gpu(vendor, class),
+                expected,
+                "{vendor:#x} {class:#08x}"
+            );
+        }
+        assert!(is_gpu_class(GPU_VGA));
+        assert!(!is_gpu_class(NVSWITCH));
     }
 
     #[test]
