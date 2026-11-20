@@ -35,8 +35,8 @@ use crate::{attr_hex, context, failed, normalize_bdf, slot, Sysfs};
 pub use crate::platform::{discover_gpus, discover_topology as discover, GpuFunction, Topology};
 
 /// PCI vendor ID of NVIDIA, the value an NVIDIA init passes to the vendor filters.
-pub const NVIDIA: u32 = 0x10de;
-const MELLANOX: u32 = 0x15b3;
+pub const NVIDIA: u32 = crate::platform::vendor::NVIDIA;
+const MELLANOX: u32 = crate::platform::vendor::MELLANOX;
 const IS_SM_DISABLED: u32 = 1 << 10;
 // PCI VPD has a 15-bit byte address. Bound allocation even for a fake sysfs file.
 const MAX_VPD: u64 = 1 << 15;

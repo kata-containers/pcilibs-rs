@@ -11,7 +11,7 @@ use std::path::PathBuf;
 
 use crate::pci_ids::{Class, Device, FromId};
 
-use crate::{normalize_bdf, PciDev, Sysfs};
+use crate::{attr_hex, normalize_bdf, PciDev, Sysfs};
 
 const PCI_CONFIG_SPACE_SZ: u64 = 256;
 
@@ -98,22 +98,18 @@ impl PCIDeviceManager {
 
         let device_path = self.sysfs.devices().join(&address);
 
-        // read vendor ID
-        let vendor_str = fs::read_to_string(device_path.join("vendor"))?;
-        let vendor_id = u16::from_str_radix(vendor_str.trim().trim_start_matches("0x"), 16)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let vendor_id = u16::try_from(attr_hex(&device_path, "vendor")?)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "vendor ID exceeds 16 bits"))?;
         if let Some(vend_id) = vendor {
             if vendor_id != vend_id {
                 return Ok(None);
             }
         }
 
-        let class_str = fs::read_to_string(device_path.join("class"))?;
-        let class_id = u32::from_str_radix(class_str.trim().trim_start_matches("0x"), 16).unwrap();
+        let class_id = attr_hex(&device_path, "class")?;
 
-        let device_str = fs::read_to_string(device_path.join("device"))?;
-        let device_id =
-            u16::from_str_radix(device_str.trim().trim_start_matches("0x"), 16).unwrap();
+        let device_id = u16::try_from(attr_hex(&device_path, "device")?)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "device ID exceeds 16 bits"))?;
 
         let driver = match fs::read_link(device_path.join("driver")) {
             Ok(path) => path.file_name().unwrap().to_string_lossy().to_string(),

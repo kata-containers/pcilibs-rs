@@ -53,6 +53,7 @@ use std::time::Duration;
 
 use anyhow::{bail, ensure, Context, Result};
 
+use crate::platform::{is_gpu_class, vendor};
 use crate::{attr_hex, normalize_bdf, poll, PciDev, Sysfs};
 use fsp::FspRpc;
 
@@ -188,7 +189,7 @@ pub fn discover(sysfs: &Sysfs) -> Result<Vec<String>> {
         let dir = sysfs.devices().join(&bdf);
         let vendor = attr_hex(&dir, "vendor").unwrap_or(0);
         let device = attr_hex(&dir, "device").unwrap_or(0);
-        if vendor == 0x10de && chip_for(device as u16).is_some() {
+        if vendor == vendor::NVIDIA && chip_for(device as u16).is_some() {
             bdfs.push(bdf);
         }
     }
@@ -212,7 +213,7 @@ impl Gpu {
     pub fn open_in(sysfs: &Sysfs, bdf: &str) -> Result<Self> {
         let pci = PciDev::open_in(sysfs, bdf)?;
         ensure!(
-            pci.vendor == 0x10de,
+            u32::from(pci.vendor) == vendor::NVIDIA,
             "{}: vendor {:#06x} is not NVIDIA",
             pci.bdf,
             pci.vendor
@@ -236,11 +237,11 @@ impl Gpu {
     ) -> Result<Self> {
         let path = sysfs.device(bdf).context("invalid PCI address")?;
         ensure!(
-            attr_hex(&path, "vendor")? == 0x10de,
+            attr_hex(&path, "vendor")? == vendor::NVIDIA,
             "{bdf}: vendor is not NVIDIA"
         );
         ensure!(
-            matches!(attr_hex(&path, "class")? >> 8, 0x0300 | 0x0302),
+            is_gpu_class(attr_hex(&path, "class")?),
             "{bdf}: PCI function is not a GPU"
         );
         let device =
@@ -249,7 +250,8 @@ impl Gpu {
             .context("subsystem device ID exceeds 16 bits")?;
         let subvendor = u16::try_from(attr_hex(&path, "subsystem_vendor")?)
             .context("subsystem vendor ID exceeds 16 bits")?;
-        let identity = crate::catalog::PciIdentity::new(0x10de, device, subvendor, subsystem);
+        let identity =
+            crate::catalog::PciIdentity::new(vendor::NVIDIA as u16, device, subvendor, subsystem);
         let record = catalog
             .lookup(identity)
             .with_context(|| format!("{bdf}: {identity:?} is absent from PCI catalog"))?;
@@ -257,7 +259,7 @@ impl Gpu {
             .with_context(|| format!("{bdf}: unsupported NVIDIA GPU profile {}", record.profile))?;
         let pci = PciDev::open_in(sysfs, bdf)?;
         ensure!(
-            pci.vendor == 0x10de && pci.device == device,
+            u32::from(pci.vendor) == vendor::NVIDIA && pci.device == device,
             "{bdf}: PCI identity changed while opening GPU"
         );
         Self::finish_open(
@@ -486,7 +488,7 @@ impl NvSwitch {
     pub fn open_in(sysfs: &Sysfs, bdf: &str) -> Result<Self> {
         let pci = PciDev::open_in(sysfs, bdf)?;
         ensure!(
-            pci.vendor == 0x10de,
+            u32::from(pci.vendor) == vendor::NVIDIA,
             "{}: vendor {:#06x} is not NVIDIA",
             pci.bdf,
             pci.vendor

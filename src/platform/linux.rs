@@ -129,8 +129,7 @@ pub(crate) fn pci_functions(sysfs: &Sysfs) -> io::Result<Vec<PciFunction>> {
 
 /// A VGA or 3D controller function of one vendor, or of any vendor for `None`.
 fn is_gpu(function: &PciFunction, vendor: Option<u32>) -> bool {
-    (vendor.is_none() || vendor == Some(function.vendor))
-        && matches!(function.class >> 8, 0x0300 | 0x0302)
+    (vendor.is_none() || vendor == Some(function.vendor)) && super::is_gpu_class(function.class)
 }
 
 /// Init needs GPU BDFs before loading drivers, without BAR or VPD access.
