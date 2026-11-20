@@ -63,11 +63,10 @@ fn open_devices() -> std::sync::MutexGuard<'static, BTreeSet<PathBuf>> {
 pub fn attr_hex(dir: &Path, name: &str) -> io::Result<u32> {
     let text = std::fs::read_to_string(dir.join(name))
         .map_err(|err| context(err, format!("read {}/{name}", dir.display())))?;
-    let text = text.trim().trim_start_matches("0x");
-    u32::from_str_radix(text, 16).map_err(|err| {
+    crate::parse_hex_id(&text).ok_or_else(|| {
         failed(
             io::ErrorKind::InvalidData,
-            format!("parse {}/{name}: {err}", dir.display()),
+            format!("parse {}/{name}: invalid hex id {text:?}", dir.display()),
         )
     })
 }
