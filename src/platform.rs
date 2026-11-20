@@ -33,6 +33,16 @@ pub const fn is_nvidia_gpu(vendor: u32, class: u32) -> bool {
     vendor == self::vendor::NVIDIA && is_gpu_class(class)
 }
 
+/// [`is_nvidia_gpu`] on the raw sysfs `vendor` and `class` attribute strings
+/// (`"0x10de"`, `"0x030200"`), so callers holding them need no parsing of
+/// their own. A value that is not a hex ID is not an NVIDIA GPU.
+pub fn is_nvidia_gpu_sysfs(vendor: &str, class: &str) -> bool {
+    match (crate::parse_hex_id(vendor), crate::parse_hex_id(class)) {
+        (Some(vendor), Some(class)) => is_nvidia_gpu(vendor, class),
+        _ => false,
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     Unknown,
@@ -164,6 +174,36 @@ mod tests {
         }
         assert!(is_gpu_class(GPU_VGA));
         assert!(!is_gpu_class(NVSWITCH));
+    }
+
+    #[test]
+    fn sysfs_attribute_strings_classify_without_their_own_parsing() {
+        const NVIDIA: &str = "0x10de";
+        const NVIDIA_AS_SYSFS_PRINTS_IT: &str = "0x10DE\n";
+        const MELLANOX: &str = "0x15b3";
+        const AMD: &str = "0x1002";
+        const GPU_3D: &str = "0x030200";
+        const GPU_VGA: &str = "0x030000";
+        const NVSWITCH: &str = "0x068000";
+        const ETHERNET: &str = "0x020000";
+        const NOT_AN_ID: &str = "nvidia";
+
+        for (vendor, class, expected) in [
+            (NVIDIA, GPU_3D, true),
+            (NVIDIA_AS_SYSFS_PRINTS_IT, GPU_VGA, true),
+            (NVIDIA, NVSWITCH, false),
+            (MELLANOX, ETHERNET, false),
+            (AMD, GPU_VGA, false),
+            ("", GPU_3D, false),
+            (NVIDIA, "", false),
+            (NOT_AN_ID, GPU_3D, false),
+        ] {
+            assert_eq!(
+                is_nvidia_gpu_sysfs(vendor, class),
+                expected,
+                "{vendor:?} {class:?}"
+            );
+        }
     }
 
     #[test]
