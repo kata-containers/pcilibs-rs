@@ -39,6 +39,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+use crate::sysfs::write_attribute;
 use crate::{context, failed, normalize_bdf, Sysfs};
 
 const PCI_COMMAND: u64 = 0x04;
@@ -171,7 +172,7 @@ impl PciDev {
     /// Function-level reset via sysfs.  The kernel saves and restores config
     /// space around it, so the mapping stays valid.
     pub fn sysfs_reset(&self) -> io::Result<()> {
-        std::fs::write(self.path.join("reset"), "1")
+        write_attribute(self.path.join("reset"), "1")
             .map_err(|err| context(err, format!("{}: reset via sysfs", self.bdf)))
     }
 }
@@ -277,7 +278,7 @@ fn wake(path: &Path) -> io::Result<Option<String>> {
         return Ok(None);
     };
     let previous = previous.trim().to_string();
-    std::fs::write(&control, "on")
+    write_attribute(&control, "on")
         .map_err(|err| context(err, format!("set {} to on (needs root)", control.display())))?;
     let status = path.join("power/runtime_status");
     poll("device wakeup from D3", Duration::from_secs(5), || {
@@ -290,7 +291,7 @@ fn wake(path: &Path) -> io::Result<Option<String>> {
 
 fn restore_power(path: &Path, previous: Option<&str>) {
     if let Some(previous) = previous {
-        let _ = std::fs::write(path.join("power/control"), previous);
+        let _ = write_attribute(path.join("power/control"), previous);
     }
 }
 

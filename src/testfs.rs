@@ -49,6 +49,9 @@ impl Fake {
     pub fn add_device(&self, address: &str, driver: Option<&str>) {
         let path = self.device(address);
         fs::create_dir_all(&path).unwrap();
+        if !path.join("driver_override").exists() {
+            fs::write(path.join("driver_override"), "").unwrap();
+        }
 
         // The kernel links both ways, and names the device by its canonical
         // address on both sides.
@@ -157,6 +160,9 @@ impl Fake {
     pub fn add_driver(&self, name: &str) -> PathBuf {
         let path = self.driver(name);
         fs::create_dir_all(&path).unwrap();
+        if !path.join("unbind").exists() {
+            fs::write(path.join("unbind"), "").unwrap();
+        }
         path
     }
 
