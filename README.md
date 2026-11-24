@@ -292,7 +292,7 @@ cargo test --all-features -- --include-ignored
 
 # Coverage, as CI gates it: 90% of lines, over the tree and per file.
 rustup component add llvm-tools-preview
-cargo install cargo-llvm-cov --locked --version 0.8.7
+cargo install cargo-llvm-cov --locked --version 0.9.1
 cargo llvm-cov --all-features --workspace \
     --fail-under-lines 90 --fail-under-file-lines 90 -- --include-ignored
 ```
