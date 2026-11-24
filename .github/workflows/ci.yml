@@ -117,8 +117,8 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - uses: taiki-e/install-action@682ce6c3c696a4cd5168a05f98e51aa02b877941 # v2.89.1
         with:
-          # Pinned: --fail-under-file-lines does not exist before 0.8.
-          tool: cargo-llvm-cov@0.8.7
+          # Pinned: 0.8 counts build scripts against the per-file gate.
+          tool: cargo-llvm-cov@0.9.1
       - run: cargo llvm-cov --all-features --workspace --fail-under-lines 90 --fail-under-file-lines 90 -- --include-ignored
 
   # Check code formatting against Rust style guidelines.
