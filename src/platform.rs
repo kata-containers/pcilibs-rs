@@ -11,7 +11,7 @@ pub(crate) mod linux;
 #[cfg(feature = "std")]
 pub use linux::{
     discover, discover_gpus, discover_topology, discover_with_catalog, DetectedPlatform,
-    GpuFunction, Topology,
+    GpuFunction, NetworkFunction, Topology,
 };
 
 use crate::catalog::Catalog;
