@@ -6,11 +6,23 @@
 //! temp tree rather than the running kernel.
 
 use std::ffi::OsStr;
+use std::fs::OpenOptions;
+use std::io::{self, Write};
 use std::path::{Component, Path, PathBuf};
 
 use crate::normalize_bdf;
 
 pub const SYSFS: &str = "/sys";
+
+/// Kernel attributes must already exist. O_CREAT causes parent-directory
+/// write checks under SELinux even when the subsequent open succeeds.
+pub(crate) fn write_attribute(path: impl AsRef<Path>, value: impl AsRef<[u8]>) -> io::Result<()> {
+    OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .open(path)?
+        .write_all(value.as_ref())
+}
 
 /// One ordinary component, so joining it cannot leave the root.
 fn is_component(name: &str) -> bool {
@@ -119,7 +131,28 @@ impl Sysfs {
 mod tests {
     use super::*;
 
-    use rstest::rstest;
+    use rstest::{fixture, rstest};
+
+    #[fixture]
+    fn attributes() -> tempfile::TempDir {
+        tempfile::tempdir().unwrap()
+    }
+
+    #[rstest]
+    fn missing_attributes_are_not_created(attributes: tempfile::TempDir) {
+        let path = attributes.path().join("driver_override");
+        let error = write_attribute(&path, "vfio-pci").unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
+        assert!(!path.exists());
+    }
+
+    #[rstest]
+    fn writes_an_existing_attribute(attributes: tempfile::TempDir) {
+        let path = attributes.path().join("driver_override");
+        std::fs::write(&path, "nvgrace-gpu-vfio-pci").unwrap();
+        write_attribute(&path, "vfio-pci").unwrap();
+        assert_eq!(std::fs::read_to_string(path).unwrap(), "vfio-pci");
+    }
 
     #[test]
     fn defaults_to_the_running_kernel() {

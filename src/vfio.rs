@@ -14,6 +14,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use crate::sysfs::write_attribute;
 use crate::{context, failed, Sysfs};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -73,9 +74,9 @@ pub fn bind(sysfs: &Sysfs, address: &str, driver: &str) -> io::Result<Bound> {
         None => {}
     }
 
-    fs::write(device.join("driver_override"), driver)
+    write_attribute(device.join("driver_override"), driver)
         .map_err(|err| context(err, format!("{address}: set driver_override to {driver}")))?;
-    fs::write(sysfs.drivers_probe(), &address).map_err(|err| {
+    write_attribute(sysfs.drivers_probe(), &address).map_err(|err| {
         // An override left behind outlives the failure: the next probe, at
         // the latest the next boot, binds a device this said it had not.
         let _ = clear_override(&device);
@@ -87,7 +88,7 @@ pub fn bind(sysfs: &Sysfs, address: &str, driver: &str) -> io::Result<Bound> {
 
 /// The kernel rejects an empty write; a newline is how it spells "none".
 fn clear_override(device: &Path) -> io::Result<()> {
-    fs::write(device.join("driver_override"), "\n")
+    write_attribute(device.join("driver_override"), "\n")
 }
 
 pub fn verify_bound(sysfs: &Sysfs, address: &str, driver: &str) -> io::Result<()> {
@@ -110,7 +111,7 @@ pub fn unbind(sysfs: &Sysfs, address: &str) -> io::Result<()> {
     let (device, address) = resolve(sysfs, address)?;
 
     if current_driver(sysfs, &address).is_some() {
-        fs::write(device.join("driver").join("unbind"), &address)
+        write_attribute(device.join("driver").join("unbind"), &address)
             .map_err(|err| context(err, format!("{address}: unbind")))?;
     }
 
@@ -204,6 +205,25 @@ mod tests {
 
         assert_eq!(fake.driver_override("0000:65:00.0"), driver);
         assert_eq!(fake.drivers_probe(), "0000:65:00.0");
+    }
+
+    #[rstest]
+    #[case::override_missing(true)]
+    #[case::probe_missing(false)]
+    fn binding_refuses_missing_kernel_attributes(fake: Fake, #[case] missing_override: bool) {
+        fake.add_device("0000:65:00.0", None);
+        let path = if missing_override {
+            fake.sysfs
+                .device("0000:65:00.0")
+                .unwrap()
+                .join("driver_override")
+        } else {
+            fake.sysfs.drivers_probe()
+        };
+        fs::remove_file(&path).unwrap();
+        let error = bind(&fake.sysfs, "0000:65:00.0", "vfio-pci").unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
+        assert!(!path.exists());
     }
 
     #[rstest]
