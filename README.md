@@ -208,6 +208,17 @@ A write, and any read past the first 64 bytes, needs root. Nothing here
 survives a reboot: the kernel enables the isolation bits itself at
 enumeration, and whatever a caller adds on top is its own to persist.
 
+### Fabric Manager partitions on the host's GPUs
+
+`pcilibs_rs::fabric` maps the GPU partitions Fabric Manager lists in shared
+NVSwitch mode onto a host's PCI functions. Fabric Manager names a GPU by
+physical ID, its module slot on the baseboard; the host reads that slot from
+the firmware's label on the function (`/sys/bus/pci/devices/<bdf>/label`),
+and `fabric::resolve` flags each partition as inactive, unsupported,
+overlapping, or incomplete on this host. A GPU without a parsable label
+resolves to no partition. The input is partition ids and physical IDs,
+however a caller obtained them.
+
 ### NVLink discovery for init processes
 
 `pcilibs_rs::nvlink` is available without the `cc` feature. It reads PCI
