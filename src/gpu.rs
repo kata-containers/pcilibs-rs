@@ -222,7 +222,7 @@ mod tests {
             assert_eq!(chip_for(chip.devid.1).unwrap().name, chip.name);
         }
         assert!(chip_for(0xffff).is_none());
-        for device in [0x3041, 0x307e, 0x30ff] {
+        for device in [0x3041, 0x307e, 0x307f, 0x30ff] {
             assert!(is_c2c(device));
             assert!(chip_for(device).unwrap().c2c_cc_supported);
         }
